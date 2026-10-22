@@ -14,6 +14,10 @@
 
 用户随后明确“继续验证”，已执行上述3请求方案，三次HTTP200，非思考JSON、工具参数校验及合成结果往返全部通过，服务端报告总578 tokens。完整状态、耗时、估算及限制见[提供方实测](customer-service-provider-verification.md)。模型收费请求3/3已用完，本轮不追加调用。后文“未调用验证”“无收费推理”仅为此前阶段状态；基础协议缺口已补齐，六业务工具、计量、共享预算及外部保留仍未验证。
 
+## 外部保留及部署期限最新核实
+
+只读检查确认MCP路径使用共享Nginx代理配置：连接30秒、读取/发送间隔3600秒，上游切换尝试配置3次/30秒；不等于实际POST重放或商城请求总期限。app仍为固定revision、LOG_LEVEL=debug；json-file日志驱动未显式设置容器轮转大小/数量，不证明满足7天保留。DeepSeek开放平台条款§5.5指出通用隐私政策不覆盖下游终端用户处理规则，未找到足以冻结本账号API请求/响应/备份期限的承诺。详见[核实证据及边界](customer-service-retention-timeout-evidence.md)。本轮无收费请求、故障注入或配置改动；实际限流/取消传播及外部保留继续明确阻塞。
+
 ## 当前契约与证据顺序
 
 业务权限以[规格](customer-service-spec.md)、[设计记录](customer-service-design.md)及[ADR](adr/0001-customer-service-authority-boundary.md)为准。具体参数、浏览器 HTTP 路由、错误码及六个模型工具 Schema 采用[集中审核稿第1–8节](customer-service-contract-proposal.md#1-推荐选择与影响)，其中第8节为记录的用户附加条件；相关性资格门采用后续[确定性保护契约](customer-service-relevance-guard.md#保护契约)。设计与参数获附条件批准，不等于实现或测试通过。

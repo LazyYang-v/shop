@@ -1,11 +1,15 @@
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from datetime import datetime
 
+import pytest
+
 from shop_api.expiry import expire_orders
+from shop_api.identity import User
+from shop_api.orders import cancel_order
 from test_order_payment_api import buyer, make_order
 
 
@@ -22,6 +26,33 @@ def test_cancel_closes_order_and_restores_stock_only_once(client):
     assert client.post(f"/api/orders/{order_id}/pay", headers=headers).status_code == 409
     assert client.get("/api/products/00000000-0000-0000-0000-000000000001").json()["stock"] == 24
     assert client.get("/api/cart").json()["items"] == []
+
+
+def test_caller_failure_rolls_back_cancellation_and_stock_restoration(client):
+    token = buyer(client, f"checkout-cancel-rollback-{uuid4().hex}@example.com")
+    order_id = make_order(client, token)
+    user_id = UUID(client.get("/api/auth/me").json()["id"])
+
+    with client.app.state.session_factory() as session:
+        with pytest.raises(RuntimeError, match="caller failed after cancellation"):
+            try:
+                user = session.get(User, user_id)
+                cancelled = cancel_order(session, user, UUID(order_id))
+                assert cancelled.status == "closed"
+                assert cancelled.close_reason == "buyer_cancelled"
+                raise RuntimeError("caller failed after cancellation")
+            except Exception:
+                session.rollback()
+                raise
+
+    order = client.get(f"/api/orders/{order_id}").json()
+    assert order["status"] == "pending_payment"
+    assert order["close_reason"] is None
+    assert order["closed_at"] is None
+    assert client.get("/api/products/00000000-0000-0000-0000-000000000001").json()["stock"] == 23
+    headers = {"X-CSRF-Token": token, "Origin": "http://testserver"}
+    assert client.post(f"/api/orders/{order_id}/cancel", headers=headers).status_code == 200
+    assert client.get("/api/products/00000000-0000-0000-0000-000000000001").json()["stock"] == 24
 
 
 def test_expired_order_cannot_be_cancelled_before_expiry_scan(client, monkeypatch):

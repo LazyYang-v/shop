@@ -306,7 +306,9 @@ def create_app(database_url: str | None = None) -> FastAPI:
     ) -> OrderResponse:
         require_csrf(request, record, csrf_token, origin)
         user = require_role(db, record, Role.BUYER)
-        return cancel_order(db, user, order_id, clock=lambda: app.state.clock())
+        result = cancel_order(db, user, order_id, clock=lambda: app.state.clock())
+        db.commit()
+        return result
 
     @app.post("/api/orders/{order_id}/pay", response_model=OrderResponse)
     def pay_order(

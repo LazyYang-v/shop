@@ -218,7 +218,6 @@ def cancel_order(session: Session, user: User, order_id: UUID, now=None, *, cloc
     if order.expires_at <= current:
         raise HTTPException(status_code=409, detail="订单已超时，暂不可取消")
     close_order(session, order, "buyer_cancelled", current)
-    session.commit()
     return read_order(session, order)
 
 

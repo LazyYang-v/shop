@@ -22,6 +22,10 @@
 
 用户确认暂无真实商城政策，DeepSeek后台未找到相关说明，WeKnora日志清理/备份保留尚未配置。政策答复仍关闭；外部保留及本地回收不标通过。[后续处理稿](customer-service-retention-followup.md)提供用户可发送的官方确认问题和日志/备份方案边界，未发送、未部署。备份周期与期限不擅自采用商城日志或证据的保留数值。
 
+## 公开政策复核修正
+
+用户补充公开政策原文后，实际复核中文2026-02-10隐私政策及2026-04开放平台协议：[逐项结论](customer-service-deepseek-policy-review.md)。隐私政策明确包括SDK/API，也要求开发者另行披露下游规则；不能简化成API完全不适用。可能训练与产品内退出机制有原文支持，但API开关适用性、内容/日志/备份期限及删除完成时间仍缺明确承诺。十五个工作日是回复期限，不是全部删除期限；六个月网络日志例子不等于所有API正文留存期限。现有订单工具设计排除地址电话，不能将其写成既定模型输入。仅演示数据的建议尚未落实或独立验收，不修改页面作全站虚构数据承诺。
+
 ## 当前契约与证据顺序
 
 业务权限以[规格](customer-service-spec.md)、[设计记录](customer-service-design.md)及[ADR](adr/0001-customer-service-authority-boundary.md)为准。具体参数、浏览器 HTTP 路由、错误码及六个模型工具 Schema 采用[集中审核稿第1–8节](customer-service-contract-proposal.md#1-推荐选择与影响)，其中第8节为记录的用户附加条件；相关性资格门采用后续[确定性保护契约](customer-service-relevance-guard.md#保护契约)。设计与参数获附条件批准，不等于实现或测试通过。

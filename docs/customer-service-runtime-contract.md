@@ -10,6 +10,8 @@
 
 ## 冻结参数
 
+下表是2026-10-23已批准参数的冻结快照，保留完整值便于验收审核。规范源为集中契约[第1节：推荐选择与影响](customer-service-contract-proposal.md#1-推荐选择与影响)、[第2节：数量、时间和预算](customer-service-contract-proposal.md#2-数量时间和预算)、[第3节：数据与保留期限](customer-service-contract-proposal.md#3-数据与保留期限)、[第4节：政策权威映射与失效处理](customer-service-contract-proposal.md#4-政策权威映射与失效处理)、[第5节：浏览器HTTP契约建议](customer-service-contract-proposal.md#5-浏览器http契约建议)、[第6节：六个模型工具Schema建议](customer-service-contract-proposal.md#6-六个模型工具schema建议)及[第8节：用户批准的附加条件与冲突取舍](customer-service-contract-proposal.md#8-用户批准的附加条件与冲突取舍)；演示覆盖项以配置方案的[推荐部署范围](customer-service-demo-configuration-plan.md#推荐部署范围)、[已冻结的设计参数](customer-service-demo-configuration-plan.md#已冻结的设计参数)、[日志实施选择](customer-service-demo-configuration-plan.md#日志实施选择)、[超时、限流与代理契约](customer-service-demo-configuration-plan.md#超时限流与代理契约)为规范源，相关性资格门见下表引用的保护契约。未来获批的参数变更必须在同一变更中同步更新对应规范源及本快照，并更新快照日期。
+
 | 项目 | 已批准契约及运行条件 |
 |---|---|
 | 提供方与编排 | DeepSeek API、deepseek-flash；Python确定性分流及受限循环，不引入LangGraph；非流式JSON，stream=false，thinking.type=disabled；本次3请求验证额度已用完 |

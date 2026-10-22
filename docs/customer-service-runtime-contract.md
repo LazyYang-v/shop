@@ -18,6 +18,10 @@
 
 只读检查确认MCP路径使用共享Nginx代理配置：连接30秒、读取/发送间隔3600秒，上游切换尝试配置3次/30秒；不等于实际POST重放或商城请求总期限。app仍为固定revision、LOG_LEVEL=debug；json-file日志驱动未显式设置容器轮转大小/数量，不证明满足7天保留。DeepSeek开放平台条款§5.5指出通用隐私政策不覆盖下游终端用户处理规则，未找到足以冻结本账号API请求/响应/备份期限的承诺。详见[核实证据及边界](customer-service-retention-timeout-evidence.md)。本轮无收费请求、故障注入或配置改动；实际限流/取消传播及外部保留继续明确阻塞。
 
+## 用户补充与后续处理
+
+用户确认暂无真实商城政策，DeepSeek后台未找到相关说明，WeKnora日志清理/备份保留尚未配置。政策答复仍关闭；外部保留及本地回收不标通过。[后续处理稿](customer-service-retention-followup.md)提供用户可发送的官方确认问题和日志/备份方案边界，未发送、未部署。备份周期与期限不擅自采用商城日志或证据的保留数值。
+
 ## 当前契约与证据顺序
 
 业务权限以[规格](customer-service-spec.md)、[设计记录](customer-service-design.md)及[ADR](adr/0001-customer-service-authority-boundary.md)为准。具体参数、浏览器 HTTP 路由、错误码及六个模型工具 Schema 采用[集中审核稿第1–8节](customer-service-contract-proposal.md#1-推荐选择与影响)，其中第8节为记录的用户附加条件；相关性资格门采用后续[确定性保护契约](customer-service-relevance-guard.md#保护契约)。设计与参数获附条件批准，不等于实现或测试通过。

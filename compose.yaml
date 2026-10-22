@@ -1,0 +1,49 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: shop-portfolio-dev-postgres
+    environment:
+      POSTGRES_USER: shop
+      POSTGRES_PASSWORD: ${SHOP_DB_PASSWORD:?set SHOP_DB_PASSWORD in .env}
+      POSTGRES_DB: shop_dev
+    ports:
+      - "127.0.0.1:55444:5432"
+    volumes:
+      - shop-portfolio-dev-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shop -d shop_dev"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  db-test:
+    image: postgres:16-alpine
+    container_name: shop-portfolio-test-postgres
+    environment:
+      POSTGRES_USER: shop
+      POSTGRES_PASSWORD: ${SHOP_DB_PASSWORD:?set SHOP_DB_PASSWORD in .env}
+      POSTGRES_DB: shop_test
+    ports:
+      - "127.0.0.1:55445:5432"
+    volumes:
+      - shop-portfolio-test-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shop -d shop_test"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: ./backend
+    environment:
+      SHOP_DATABASE_URL: postgresql+psycopg://shop:${SHOP_DB_PASSWORD}@db:5432/shop_dev
+    ports:
+      - "127.0.0.1:8011:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  shop-portfolio-dev-postgres-data:
+  shop-portfolio-test-postgres-data:

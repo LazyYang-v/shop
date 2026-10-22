@@ -57,7 +57,7 @@ uv run --project backend ty check backend/src/shop_api
 
 ## 3. 模型工具输入输出契约
 
-以下名称为设计占位名称，状态均为**已设计未实现**，最终 MCP 名称及 Schema 需实现前冻结。所有输入拒绝未知字段；所有返回统一含 request_id、queried_at、status、data。失败返回受控错误码，不含内部堆栈。来源通过工具结果附带，不能让模型编造。空列表与服务故障分别表达。
+以下六个工具名称及 Schema 已按[集中审核稿第6节](customer-service-contract-proposal.md#6-六个模型工具schema建议)及[第8节附加条件](customer-service-contract-proposal.md#8-用户批准的附加条件与冲突取舍)记录为附条件批准的设计，状态均为**已设计未实现**；实现、模型工具兼容性及剩余证据仍待完成，详见[运行契约](customer-service-runtime-contract.md)。所有输入拒绝未知字段；所有返回统一含 request_id、queried_at、status、data。失败返回受控错误码，不含内部堆栈。来源通过工具结果附带，不能让模型编造。空列表与服务故障分别表达。
 
 | 工具 | 输入 | data 内容 | 主要验收 |
 |---|---|---|---|
@@ -68,7 +68,7 @@ uv run --project backend ty check backend/src/shop_api
 | get_my_order | 订单标识 | 本人订单状态、金额、商品摘要、支付截止、关闭原因、已保存物流 | 无地址电话；不生成实时轨迹或预计送达 |
 | propose_cancel | 已明确选择的订单标识 | 方案摘要、操作编号、供模型表达的结果；确认卡经独立前端通道下发 | 不写订单；不向模型返回凭据；服务端检查当前可提出方案条件 |
 
-浏览器专用协议（均**已设计未实现**）：建立/交接页面实例、续期交接标识、确认执行、按操作编号结果核验。确认和核验均不注册给模型；精确 URL、错误码、HTTP 状态和数据上限尚待冻结。
+浏览器专用协议（均**已设计未实现**）：建立/交接页面实例、续期交接标识、确认执行、按操作编号结果核验。确认和核验均不注册给模型；精确 URL、错误码、HTTP 状态和数据上限已按[集中审核稿第5节](customer-service-contract-proposal.md#5-浏览器http契约建议)及[第8节附加条件](customer-service-contract-proposal.md#8-用户批准的附加条件与冲突取舍)记录为附条件批准的设计，实现、兼容性及剩余验收证据仍待完成，详见[运行契约](customer-service-runtime-contract.md)。
 
 ## 4. 页面交接协议
 

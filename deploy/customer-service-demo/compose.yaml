@@ -1,6 +1,9 @@
 name: shop-customer-service-demo
 
+# All runtime services stay opt-in until the documented deployment gates pass.
+# shop-api overrides this profile and requires its own reviewed product guards.
 x-logless: &logless
+  profiles: [pending-demo-gates]
   logging:
     driver: none
   restart: "no"

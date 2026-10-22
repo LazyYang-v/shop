@@ -13,7 +13,7 @@
 
 ## 明确未启用
 
-商城API位于pending-demo-guards profile。现有镜像没有客服、演示账号白名单、受控问题、fixture哈希及模型输入映射；不能用虚构环境变量宣称已启用这些保护。模板要求后续提供审核过的API镜像，不默认使用当前镜像。
+所有基础服务位于pending-demo-gates profile，默认没有可启动服务；商城API单独位于pending-demo-guards profile，基础profile不会启用API。显式指定服务也可能激活profile，profile不是授权或运行保护，不能在运行门槛未满足时启动。现有镜像没有客服、演示账号白名单、受控问题、fixture哈希及模型输入映射；不能用虚构环境变量宣称已启用这些保护。模板要求后续提供审核过的API镜像，不默认使用当前镜像。
 
 未提供Web商城入口或WeKnora管理UI，MCP代理拒绝其他路径；首次管理员、知识库、受限端点的初始化需单独设计本地流程，当前禁用注册。不复制现有数据库或创建真实政策。
 
@@ -23,7 +23,7 @@ DEMO_WEKNORA_CONFIG必须指向另行准备并审查的演示专用config.yaml�
 
 ## 已执行静态验证
 
-Docker Compose v5.4.0使用纯合成密码和不存在的占位配置路径执行config --format json，内存解析后检查：项目名、7个服务、无全局container_name/继承env_file、所有发布端口仅127.0.0.1、所有网络internal、全部logging none、bind只读且create_host_path=false、API profile默认隔离。未输出解析后的环境或真实秘密。解析通过不检查bind源文件或镜像启动。
+Docker Compose v5.4.0使用纯合成密码和不存在的占位配置路径执行config --format json，内存解析后检查：项目名、7个服务、无全局container_name/继承env_file、所有发布端口仅127.0.0.1、所有网络internal、全部logging none、bind只读且create_host_path=false、全部服务profile默认隔离（默认0服务，基础profile不含API）。未输出解析后的环境或真实秘密。解析通过不检查bind源文件或镜像启动。
 
 未运行up/run/build/pull/exec演示容器；未创建卷。Nginx配置仅静态审查，未在候选容器中执行nginx -t；需启动获准时先验证镜像入口、配置语法、DNS及健康检查，再开放入口。docreader健康检查命令与现有镜像运行配置一致，候选仍需独立验证。
 
@@ -35,4 +35,4 @@ Docker Compose v5.4.0使用纯合成密码和不存在的占位配置路径执�
 4. 以合成哨兵验证账号/输入/日志边界及隔离恢复，记录实际RTO。配置解析不能替代API/浏览器验收。
 5. 回退只停止新项目服务，保留卷供检查，不使用down -v，不触及当前部署及旧日志。
 
-本目录可供审查部署差异，尚不构成可直接上线的完整客服环境。#1仍需将批准的演示范围与后续验收责任收口，后续票负责产品实现。
+本目录可供审查部署差异，尚不构成可直接上线的完整客服环境。#1最终验收及后续票责任已收口于[运行契约](../../docs/customer-service-runtime-contract.md)；建议关闭核实票不代表本候选可以启动。

@@ -1,5 +1,7 @@
 # WeKnora 官方证据核对（LazyYang-v/docs#1）
 
+> 历史记录：保留当轮观察及授权边界；2026-10-23当前范围、已批准参数、证据进展与#1关闭建议以[最终运行契约](customer-service-runtime-contract.md)为准。下文阶段性的OPEN/未授权/待冻结不作为当前结论；实际未验证能力仍受该契约的运行门槛约束。
+
 核对日期：2026-10-22。范围：[目标 issue](https://github.com/LazyYang-v/docs/issues/1) 要求的接入契约；仅通过 GitHub 只读 API 阅读官方文档和源码，未 clone、下载源码到本地、安装或执行上游代码，未请求用户部署、未读取秘密、未修改项目或发布 Issue。
 
 ## 身份与版本边界

@@ -1,5 +1,7 @@
 # Issue #1 DeepSeek公开政策复核
 
+> 历史记录：保留当轮观察及授权边界；2026-10-23当前范围、已批准参数、证据进展与#1关闭建议以[最终运行契约](customer-service-runtime-contract.md)为准。下文阶段性的OPEN/未授权/待冻结不作为当前结论；实际未验证能力仍受该契约的运行门槛约束。
+
 日期：2026-10-22。用户提供政策整理后，本轮实际获取并核对[中文隐私政策](https://cdn.deepseek.com/policies/zh-CN/deepseek-privacy-policy.html)（更新及生效2026-02-10）、[中文开放平台服务协议](https://cdn.deepseek.com/policies/zh-CN/deepseek-open-platform-terms-of-service.html)（更新2026-04-22、生效2026-04-29）。英文版本见此前[核实记录](customer-service-retention-timeout-evidence.md)。本轮无模型调用或外部消息发送。
 
 ## 适用范围修正

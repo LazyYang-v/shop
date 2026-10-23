@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import time
 from datetime import timedelta
 from uuid import UUID, uuid4
 
@@ -92,6 +93,286 @@ def propose(client, created, order_id=None, *, client_message_id=None):
     if client_message_id is not None:
         payload["client_message_id"] = client_message_id
     return client.post(PREFIX + "/messages", json=payload)
+
+
+def test_reconcile_pending_revokes_credential_and_late_confirmation_cannot_cancel(cancel_client):
+    client = cancel_client
+    order_id = make_order(client)
+    created = page(client)
+    card = propose(client, created, order_id).json()["confirmation_card"]
+    payload = {"page_instance_id": created["page_instance_id"],
+               "consultation_id": created["consultation_id"],
+               "operation_id": card["operation_id"]}
+
+    reconciled = client.post(PREFIX + "/cancel/reconcile", json=payload)
+    repeated = client.post(PREFIX + "/cancel/reconcile", json=payload)
+    late_confirmation = client.post(PREFIX + "/cancel/confirm", json={
+        **payload, "confirmation_token": card["confirmation_token"]})
+
+    assert reconciled.status_code == 200, reconciled.text
+    assert reconciled.json()["status"] == "expired"
+    assert reconciled.json()["data"]["operation_id"] == card["operation_id"]
+    assert reconciled.json()["data"]["evidence"]["reason"] == "reconciled_unknown_result"
+    assert repeated.status_code == 200
+    assert repeated.json()["data"] == reconciled.json()["data"]
+    assert late_confirmation.status_code == 409
+    order = client.get(f"/api/orders/{order_id}")
+    product = client.get(f"/api/products/{PRODUCT_ID}")
+    assert order.status_code == 200
+    assert order.json()["status"] == "pending_payment" and order.json()["close_reason"] is None
+    assert product.status_code == 200 and product.json()["stock"] == 23
+
+
+def test_reconcile_commit_failure_returns_unknown_and_retry_converges(cancel_client):
+    from sqlalchemy import event
+    from sqlalchemy.orm import Session as OrmSession
+
+    client = cancel_client
+    order_id = make_order(client)
+    created = page(client)
+    card = propose(client, created, order_id).json()["confirmation_card"]
+    payload = {"page_instance_id": created["page_instance_id"],
+               "consultation_id": created["consultation_id"], "operation_id": card["operation_id"]}
+    fired = False
+
+    def fail_reconcile_commit(session):
+        nonlocal fired
+        if any(isinstance(operation, CancelOperation) and operation.id == UUID(card["operation_id"])
+               for operation in session.dirty):
+            fired = True
+            raise RuntimeError("injected ambiguous commit failure")
+
+    event.listen(OrmSession, "before_commit", fail_reconcile_commit)
+    try:
+        unknown = client.post(PREFIX + "/cancel/reconcile", json=payload)
+    finally:
+        event.remove(OrmSession, "before_commit", fail_reconcile_commit)
+
+    assert fired
+    assert unknown.status_code == 503 and unknown.json()["code"] == "result_unknown"
+    assert unknown.json()["status"] == "unavailable"
+    repeated = client.post(PREFIX + "/cancel/reconcile", json=payload)
+    late = client.post(PREFIX + "/cancel/confirm", json={
+        **payload, "confirmation_token": card["confirmation_token"]})
+    assert repeated.status_code == 200 and repeated.json()["status"] == "expired"
+    assert repeated.json()["data"]["evidence"]["reason"] == "reconciled_unknown_result"
+    assert late.status_code == 409
+    order = client.get(f"/api/orders/{order_id}")
+    product = client.get(f"/api/products/{PRODUCT_ID}")
+    assert order.status_code == 200 and order.json()["status"] == "pending_payment"
+    assert product.status_code == 200 and product.json()["stock"] == 23
+
+
+def test_reconcile_returns_executed_evidence_after_confirmation_commit(cancel_client):
+    client = cancel_client
+    order_id = make_order(client)
+    created = page(client)
+    card = propose(client, created, order_id).json()["confirmation_card"]
+    payload = {"page_instance_id": created["page_instance_id"],
+               "consultation_id": created["consultation_id"],
+               "operation_id": card["operation_id"]}
+    confirmed = client.post(PREFIX + "/cancel/confirm", json={
+        **payload, "confirmation_token": card["confirmation_token"]})
+
+    reconciled = client.post(PREFIX + "/cancel/reconcile", json=payload)
+
+    assert confirmed.status_code == 200 and confirmed.json()["status"] == "executed"
+    assert reconciled.status_code == 200 and reconciled.json()["status"] == "executed"
+    assert reconciled.json()["data"]["evidence"] == confirmed.json()["data"]["evidence"]
+    assert reconciled.json()["data"]["evidence"]["close_reason"] == "buyer_cancelled"
+
+
+def test_reconcile_returns_rejected_evidence(cancel_client):
+    client = cancel_client
+    order_id = make_order(client)
+    created = page(client)
+    card = propose(client, created, order_id).json()["confirmation_card"]
+    canceled = client.post(f"/api/orders/{order_id}/cancel")
+    payload = {"page_instance_id": created["page_instance_id"],
+               "consultation_id": created["consultation_id"],
+               "operation_id": card["operation_id"], "confirmation_token": card["confirmation_token"]}
+    rejected = client.post(PREFIX + "/cancel/confirm", json=payload)
+    reconciled = client.post(PREFIX + "/cancel/reconcile", json={key: value for key, value in payload.items()
+                                                                    if key != "confirmation_token"})
+
+    assert canceled.status_code == 200 and canceled.json()["close_reason"] == "buyer_cancelled"
+    assert rejected.status_code == 200 and rejected.json()["status"] == "rejected"
+    assert reconciled.status_code == 200 and reconciled.json()["status"] == "rejected"
+    assert reconciled.json()["data"]["evidence"] == rejected.json()["data"]["evidence"]
+    assert reconciled.json()["data"]["evidence"]["reason"] == "order_state_changed"
+    order = client.get(f"/api/orders/{order_id}")
+    assert order.status_code == 200 and order.json()["status"] == "closed"
+
+
+def test_reconcile_expiry_evidence_survives_application_restart(cancel_client, tmp_path):
+    from fastapi.testclient import TestClient
+    from shop_api.app import create_app
+
+    client = cancel_client
+    order_id = make_order(client)
+    created = page(client)
+    card = propose(client, created, order_id).json()["confirmation_card"]
+    payload = {"page_instance_id": created["page_instance_id"],
+               "consultation_id": created["consultation_id"], "operation_id": card["operation_id"]}
+    first = client.post(PREFIX + "/cancel/reconcile", json=payload)
+    assert first.status_code == 200 and first.json()["status"] == "expired"
+
+    restarted_app = create_app(database_url=client.app.state.session_factory.kw["bind"].url.render_as_string(hide_password=False))
+    restarted_app.state.customer_service_enabled = True
+    restarted_app.state.customer_service_buyer_ids = client.app.state.customer_service_buyer_ids
+    restarted_app.state.customer_service_fixtures = client.app.state.customer_service_fixtures
+    log_directory = tmp_path / "restart-logs"
+    log_directory.mkdir(mode=0o700)
+    restarted_app.state.customer_service_log_writer = SafeLogWriter(str(log_directory))
+    with TestClient(restarted_app) as restarted:
+        restarted.cookies.update(client.cookies)
+        csrf = restarted.get("/api/auth/csrf").json()["csrf_token"]
+        after_restart = restarted.post(PREFIX + "/cancel/reconcile", json=payload, headers={
+            "Origin": "http://testserver", "X-CSRF-Token": csrf})
+
+    assert after_restart.status_code == 200 and after_restart.json()["status"] == "expired"
+    assert after_restart.json()["data"] == first.json()["data"]
+
+
+def test_reconcile_returns_expired_evidence(cancel_client):
+    client = cancel_client
+    order_id = make_order(client)
+    created = page(client)
+    card = propose(client, created, order_id).json()["confirmation_card"]
+    later = client.app.state.clock() + timedelta(minutes=3)
+    client.app.state.clock = lambda: later
+    expire_due_cancel_operations(client.app.state.session_factory, later)
+    reconcile_payload = {"page_instance_id": created["page_instance_id"],
+                         "consultation_id": created["consultation_id"], "operation_id": card["operation_id"]}
+    reconciled = client.post(PREFIX + "/cancel/reconcile", json=reconcile_payload)
+    late = client.post(PREFIX + "/cancel/confirm", json={
+        **reconcile_payload, "confirmation_token": card["confirmation_token"]})
+
+    assert reconciled.status_code == 200 and reconciled.json()["status"] == "expired"
+    assert reconciled.json()["data"]["evidence"]["reason"] == "credential_expired"
+    assert late.status_code == 409
+
+
+def test_reconcile_is_protected_and_bound_to_original_buyer_page(cancel_client):
+    client = cancel_client
+    order_id = make_order(client)
+    created = page(client)
+    card = propose(client, created, order_id).json()["confirmation_card"]
+    payload = {"page_instance_id": created["page_instance_id"],
+               "consultation_id": created["consultation_id"], "operation_id": card["operation_id"]}
+    csrf = client.headers.pop("X-CSRF-Token")
+    try:
+        assert client.post(PREFIX + "/cancel/reconcile", json=payload).status_code == 403
+    finally:
+        client.headers["X-CSRF-Token"] = csrf
+    origin = client.headers["Origin"]
+    client.headers["Origin"] = "http://attacker.test"
+    try:
+        assert client.post(PREFIX + "/cancel/reconcile", json=payload).status_code == 403
+    finally:
+        client.headers["Origin"] = origin
+    payload["consultation_id"] = str(uuid4())
+    assert client.post(PREFIX + "/cancel/reconcile", json=payload).status_code == 403
+    other = make_other_buyer(client)
+    other_page = page(other)
+    foreign = other.post(PREFIX + "/cancel/reconcile", json={
+        "page_instance_id": other_page["page_instance_id"],
+        "consultation_id": other_page["consultation_id"], "operation_id": card["operation_id"]})
+    assert foreign.status_code == 403
+
+
+def test_reconcile_row_lock_contention_returns_processing(cancel_client):
+    client = cancel_client
+    order_id = make_order(client)
+    created = page(client)
+    card = propose(client, created, order_id).json()["confirmation_card"]
+    from sqlalchemy import text as sql_text
+    from threading import Event, Thread
+    locked = Event()
+    release = Event()
+
+    def hold_operation_lock():
+        with client.app.state.session_factory.begin() as db:
+            db.execute(sql_text("SELECT id FROM customer_service_cancel_operations WHERE id=:id FOR UPDATE"),
+                       {"id": card["operation_id"]})
+            locked.set()
+            release.wait(timeout=3)
+
+    worker = Thread(target=hold_operation_lock)
+    worker.start()
+    assert locked.wait(timeout=2)
+    try:
+        started = time.monotonic()
+        response = client.post(PREFIX + "/cancel/reconcile", json={
+            "page_instance_id": created["page_instance_id"], "consultation_id": created["consultation_id"],
+            "operation_id": card["operation_id"]})
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+        worker.join(timeout=3)
+    assert not worker.is_alive()
+    assert response.status_code == 425
+    assert response.json()["status"] == "processing"
+    assert elapsed < 1.5
+    completed = client.post(PREFIX + "/cancel/reconcile", json={
+        "page_instance_id": created["page_instance_id"], "consultation_id": created["consultation_id"],
+        "operation_id": card["operation_id"]})
+    late = client.post(PREFIX + "/cancel/confirm", json={
+        "page_instance_id": created["page_instance_id"],
+        "consultation_id": created["consultation_id"], "operation_id": card["operation_id"],
+        "confirmation_token": card["confirmation_token"]})
+    assert completed.status_code == 200 and completed.json()["status"] == "expired"
+    assert late.status_code == 409
+    assert client.get(f"/api/orders/{order_id}").json()["status"] == "pending_payment"
+
+
+def test_reconcile_waits_for_confirmation_and_returns_committed_evidence(cancel_client):
+    from threading import Event, Thread
+
+    client = cancel_client
+    order_id = make_order(client)
+    created = page(client)
+    card = propose(client, created, order_id).json()["confirmation_card"]
+    operation_id = UUID(card["operation_id"])
+    payload = {"page_instance_id": created["page_instance_id"],
+               "consultation_id": created["consultation_id"], "operation_id": card["operation_id"]}
+    lock_ready = Event()
+    allow_commit = Event()
+    result = {}
+
+    def pause_confirmation_before_commit(session):
+        if session.get(CancelOperation, operation_id) is not None:
+            lock_ready.set()
+            assert allow_commit.wait(timeout=3)
+
+    from sqlalchemy import event
+    from sqlalchemy.orm import Session as OrmSession
+    event.listen(OrmSession, "before_commit", pause_confirmation_before_commit)
+    try:
+        confirmer = Thread(target=lambda: result.setdefault("confirm", client.post(
+            PREFIX + "/cancel/confirm", json={**payload, "confirmation_token": card["confirmation_token"]})))
+        confirmer.start()
+        assert lock_ready.wait(timeout=3)
+        reconciler = Thread(target=lambda: result.setdefault("reconcile", client.post(
+            PREFIX + "/cancel/reconcile", json=payload)))
+        reconciler.start()
+        time.sleep(0.15)
+        allow_commit.set()
+        confirmer.join(timeout=3)
+        reconciler.join(timeout=3)
+    finally:
+        allow_commit.set()
+        event.remove(OrmSession, "before_commit", pause_confirmation_before_commit)
+    assert not confirmer.is_alive() and not reconciler.is_alive()
+    assert result["confirm"].status_code == 200
+    assert result["confirm"].json()["status"] == "executed"
+    assert result["reconcile"].status_code == 200
+    assert result["reconcile"].json()["status"] == "executed"
+    assert result["reconcile"].json()["data"]["evidence"] == result["confirm"].json()["data"]["evidence"]
+    order = client.get(f"/api/orders/{order_id}")
+    product = client.get(f"/api/products/{PRODUCT_ID}")
+    assert order.status_code == 200 and order.json()["close_reason"] == "buyer_cancelled"
+    assert product.status_code == 200 and product.json()["stock"] == 24
 
 
 def test_confirmation_retry_returns_evidence_without_double_stock_restore(cancel_client):

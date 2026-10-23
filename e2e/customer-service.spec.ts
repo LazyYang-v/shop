@@ -382,14 +382,24 @@ test('buyer confirmation cancels a pending order and verifies its execution evid
     id: orderNumber, status: 'closed', close_reason: 'buyer_cancelled', expires_at: detail.expires_at,
   } }))
   const confirmBodies: Record<string, unknown>[] = []
+  const reconcileBodies: Record<string, unknown>[] = []
   await page.route('**/api/customer-service/cancel/confirm', async route => {
     confirmBodies.push(route.request().postDataJSON())
     expect(bodies).toHaveLength(4)
     expect(route.request().headers()['x-csrf-token']).toBe('synthetic-csrf')
+    if (confirmBodies.length === 1) {
+      await route.fulfill({ json: { ...response('rolled_back'), status: 'rolled_back',
+        code: 'transaction_rolled_back', data: { operation_id: operationId } } })
+      return
+    }
     await route.fulfill({ json: { ...response('executed'), status: 'executed', data: {
       operation_id: operationId, order_id: orderNumber, order_status: 'closed',
       close_reason: 'buyer_cancelled', evidence: { order_id: orderNumber, status: 'closed', close_reason: 'buyer_cancelled' },
     } } })
+  })
+  await page.route('**/api/customer-service/cancel/reconcile', async route => {
+    reconcileBodies.push(route.request().postDataJSON())
+    await route.fulfill({ status: 425, json: { ...response('processing'), code: 'processing', data: null } })
   })
   await page.route('**/api/customer-service/messages', async route => {
     const body = route.request().postDataJSON()
@@ -439,15 +449,25 @@ test('buyer confirmation cancels a pending order and verifies its execution evid
   expect(storage.session).not.toContain(token)
   expect(storage.local).not.toContain(operationId)
   expect(storage.session).not.toContain(operationId)
-  await page.getByRole('button', { name: '确认取消订单' }).click()
+  const confirmButton = page.getByRole('button', { name: '确认取消订单' })
+  await confirmButton.click()
+  await expect(log).toContainText('取消事务已明确回滚；订单未改变。')
+  await expect(confirmButton).toBeEnabled()
+  expect(confirmBodies).toHaveLength(1)
+  expect(reconcileBodies).toHaveLength(0)
+  await confirmButton.click()
   await expect(log).toContainText('取消成功：本人订单已关闭，原因是买家取消。')
-  expect(confirmBodies).toEqual([{ page_instance_id: 'page-cancel', consultation_id: 'consultation-cancel',
-    operation_id: operationId, confirmation_token: token }])
+  expect(confirmBodies).toHaveLength(2)
+  expect(confirmBodies[0]).toEqual({ page_instance_id: 'page-cancel', consultation_id: 'consultation-cancel',
+    operation_id: operationId, confirmation_token: token })
+  expect(confirmBodies[1]).toEqual(confirmBodies[0])
+  expect(reconcileBodies).toHaveLength(0)
   expect(bodies).toHaveLength(4)
   await expect(log).toContainText('状态：待付款')
 })
 
-test('unclear cancellation confirmation shows operation ID and never retries', async ({ page }) => {
+test('unclear cancellation confirmation reconciles without replay and offers one manual check', async ({ page }) => {
+  await page.clock.install()
   const orderNumber = '11111111-1111-4111-8111-111111111111'
   const operationId = '88888888-8888-4888-8888-888888888888'
   const token = 'g'.repeat(43)
@@ -461,10 +481,16 @@ test('unclear cancellation confirmation shows operation ID and never retries', a
     ...response('ok'), data: { page_instance_id: 'page-unknown', consultation_id: 'consultation-unknown' },
   } }))
   const confirmBodies: Record<string, unknown>[] = []
+  const reconcileBodies: Record<string, unknown>[] = []
   await page.route('**/api/customer-service/cancel/confirm', async route => {
     confirmBodies.push(route.request().postDataJSON())
     expect(route.request().headers()['x-csrf-token']).toBe('synthetic-csrf')
     await route.fulfill({ status: 503, json: { ...response('result_unknown'), code: 'result_unknown', data: null } })
+  })
+  await page.route('**/api/customer-service/cancel/reconcile', async route => {
+    reconcileBodies.push(route.request().postDataJSON())
+    expect(route.request().headers()['x-csrf-token']).toBe('synthetic-csrf')
+    await route.fulfill({ status: 425, json: { ...response('processing'), code: 'processing', data: null } })
   })
   await page.route('**/api/customer-service/messages', async route => {
     const body = route.request().postDataJSON()
@@ -498,8 +524,75 @@ test('unclear cancellation confirmation shows operation ID and never retries', a
   await expect(log).toContainText('取消结果待核验，操作编号：' + operationId)
   expect(confirmBodies).toHaveLength(1)
   await expect(page.getByRole('button', { name: '确认取消订单', exact: true })).toBeDisabled()
-  await page.waitForTimeout(150)
+  await page.clock.fastForward(2250)
+  await expect.poll(() => reconcileBodies.length).toBe(1)
+  expect(reconcileBodies[0]).toEqual({ page_instance_id: 'page-unknown',
+    consultation_id: 'consultation-unknown', operation_id: operationId })
+  await page.clock.fastForward(4250)
+  await expect.poll(() => reconcileBodies.length).toBe(2)
+  await page.clock.fastForward(8250)
+  await expect.poll(() => reconcileBodies.length).toBe(3)
+  await page.clock.fastForward(15250)
+  await expect.poll(() => reconcileBodies.length).toBe(4)
   expect(confirmBodies).toHaveLength(1)
+  await page.clock.fastForward(5 * 60 * 1000)
+  await expect(log).toContainText('无法核验取消结果；操作编号：' + operationId)
+  const manual = page.getByRole('button', { name: '手动检查取消结果' })
+  await expect(manual).toBeVisible()
+  await manual.click()
+  await expect.poll(() => reconcileBodies.length).toBe(5)
+  await expect(manual).toHaveCount(0)
+  expect(confirmBodies).toHaveLength(1)
+  await expect(log).not.toContainText('已取消')
+})
+
+test('reconciliation stops polling when authentication expires', async ({ page }) => {
+  await page.clock.install()
+  const orderNumber = '11111111-1111-4111-8111-111111111111'
+  const operationId = '99999999-9999-4999-8999-999999999999'
+  const token = 'h'.repeat(43)
+  const candidate = { order_number: orderNumber, created_at: '2026-10-23T09:00:00+00:00',
+    product_summary: '测试商品 ×1', total: '129.00', status: 'pending_payment' }
+  const detail = { order_number: orderNumber, status: 'pending_payment', total: '129.00',
+    product_summary: '测试商品 ×1', expires_at: '2026-10-23T09:30:00+00:00', close_reason: null,
+    shipping_company: null, tracking_number: null, shipped_at: null }
+  await page.route('**/api/customer-service/pages', route => route.fulfill({ status: 201, json: {
+    ...response('ok'), data: { page_instance_id: 'page-auth-loss', consultation_id: 'consultation-auth-loss' },
+  } }))
+  await page.route('**/api/customer-service/messages', async route => {
+    const body = route.request().postDataJSON()
+    if (body.text === '申请取消订单') {
+      await route.fulfill({ json: { ...response('ok'), data: { reply: '已生成取消确认方案。', cards: [], citations: [] },
+        confirmation_card: { operation_id: operationId, order_number: orderNumber, status: 'pending_payment',
+          product_summary: '测试商品 ×1', total: '129.00', currency: 'CNY',
+          expires_at: new Date(Date.now() + 120000).toISOString(), confirmation_token: token } } })
+    } else if (body.selected_order_id) {
+      await route.fulfill({ json: { ...response('ok'), data: { reply: '订单详情',
+        cards: [{ type: 'order_detail', order: detail }], citations: [] } } })
+    } else {
+      await route.fulfill({ json: { ...response('ok'), data: { reply: '请选择订单',
+        cards: [{ type: 'order', order: candidate }], citations: [] } } })
+    }
+  })
+  await page.route('**/api/customer-service/cancel/confirm', route => route.fulfill({
+    status: 503, json: { ...response('result_unknown'), code: 'result_unknown', data: null },
+  }))
+  let reconciles = 0
+  await page.route('**/api/customer-service/cancel/reconcile', async route => {
+    reconciles += 1
+    await route.fulfill({ status: 401, json: { ...response('error'), code: 'authentication_required', data: null } })
+  })
+  await page.goto('/customer-service.html')
+  await page.getByRole('button', { name: '查询我的订单' }).click()
+  await page.getByRole('button', { name: /查询订单 .* 的详情/ }).click()
+  await page.getByRole('button', { name: '申请取消订单', exact: true }).click()
+  await page.getByRole('button', { name: '确认取消订单', exact: true }).click()
+  await page.clock.fastForward(2250)
+  await expect.poll(() => reconciles).toBe(1)
+  await expect(page.getByRole('dialog', { name: '登录后查看本人订单' })).toBeVisible()
+  await page.clock.fastForward(60000)
+  expect(reconciles).toBe(1)
+  await expect(page.getByRole('log')).toContainText('无法核验取消结果；操作编号：' + operationId)
 })
 
 test('expired cancellation card is marked unusable without execution', async ({ page }) => {

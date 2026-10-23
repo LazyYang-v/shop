@@ -167,19 +167,32 @@ try {
   assert.ok(!(await ownerPage.content()).includes(card.confirmation_token))
   assert.ok((await ownerPage.content()).includes(card.operation_id))
 
-  const confirmRequest = ownerPage.waitForResponse(item => new URL(item.url()).pathname.endsWith('/cancel/confirm'))
+  let committedConfirmation
+  let confirmationRequests = 0
+  await ownerPage.route('**/api/customer-service/cancel/confirm', async route => {
+    confirmationRequests += 1
+    committedConfirmation = await route.fetch()
+    assert.equal(committedConfirmation.status(), 200)
+    await route.abort('connectionreset')
+  })
+  const reconcileResponse = ownerPage.waitForResponse(item => new URL(item.url()).pathname.endsWith('/cancel/reconcile'))
   await confirmButton.click()
-  response = await confirmRequest
+  response = await reconcileResponse
   assert.equal(response.status(), 200)
-  const execution = await response.json()
+  const execution = await committedConfirmation.json()
   assert.equal(execution.status, 'executed')
   assert.equal(execution.data.operation_id, card.operation_id)
   assert.equal(execution.data.order_id, cancelOrderId)
   assert.equal(execution.data.order_status, 'closed')
   assert.equal(execution.data.close_reason, 'buyer_cancelled')
   assert.equal(execution.data.evidence.close_reason, 'buyer_cancelled')
+  const reconciledExecution = await response.json()
+  assert.equal(reconciledExecution.status, 'executed')
+  assert.equal(reconciledExecution.data.operation_id, card.operation_id)
+  assert.equal(reconciledExecution.data.evidence.close_reason, 'buyer_cancelled')
+  assert.equal(confirmationRequests, 1)
   await ownerPage.waitForFunction(() => document.querySelector('[role="log"]').textContent.includes('取消成功：本人订单已关闭，原因是买家取消。'))
-  assert.equal((await ownerLog.textContent()).includes('取消结果待核验'), false)
+  assert.equal((await ownerLog.textContent()).includes('取消结果待核验，操作编号：' + card.operation_id), false)
   assert.equal((await ownerLog.textContent()).includes('已取消订单，商品库存已恢复。'), false)
   assert.ok(!(await ownerLog.textContent()).includes(card.confirmation_token))
   await ownerPage.reload()

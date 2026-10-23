@@ -68,6 +68,14 @@ class ConfirmCancelInput(BaseModel):
     confirmation_token: str = Field(max_length=128, pattern=r"^[A-Za-z0-9_-]{43}$")
 
 
+class ReconcileCancelInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    page_instance_id: str = Field(max_length=128)
+    consultation_id: str = Field(max_length=128)
+    operation_id: str = Field(max_length=128)
+
+
 class ProposeCancelArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -146,6 +154,37 @@ def confirm_cancel(session: Session, *, buyer, session_id: UUID, page_id: UUID,
     return EXECUTED, operation.evidence
 
 
+def reconcile_cancel(session: Session, *, buyer, session_id: UUID, page_id: UUID,
+                     consultation_id: UUID, operation_id: UUID,
+                     clock: Callable[[], datetime]) -> tuple[str, dict]:
+    """Read terminal evidence or revoke a pending credential under its row lock."""
+    operation = session.scalar(select(CancelOperation).where(
+        CancelOperation.id == operation_id).with_for_update())
+    if (operation is None or operation.buyer_id != buyer.id or operation.session_id != session_id
+            or operation.page_id != page_id or operation.consultation_id != consultation_id
+            or operation.action != CANCEL_ACTION):
+        raise HTTPException(status_code=403, detail="未找到可访问的记录")
+
+    if operation.state in (EXECUTED, REJECTED, EXPIRED):
+        return operation.state, operation.evidence or {}
+    if operation.state != PENDING:
+        raise HTTPException(status_code=409, detail="取消操作状态无效")
+
+    now = clock()
+    evidence = {"reason": "reconciled_unknown_result", "reconciled_at": now.isoformat()}
+    expired = session.execute(update(CancelOperation).where(
+        CancelOperation.id == operation.id,
+        CancelOperation.state == PENDING,
+    ).values(state=EXPIRED, credential_hash=None, terminal_at=now, evidence=evidence))
+    if expired.rowcount != 1:
+        raise HTTPException(status_code=425, detail="取消结果仍在处理中")
+    operation.state = EXPIRED
+    operation.credential_hash = None
+    operation.terminal_at = now
+    operation.evidence = evidence
+    return EXPIRED, evidence
+
+
 def invalidate_pending_proposals(session: Session, page_id: UUID, now: datetime) -> None:
     """Expire the page's pending proposal; terminal states are never touched."""
     invalidate_pending_proposals_for_pages(session, [page_id], now)
@@ -158,7 +197,8 @@ def invalidate_pending_proposals_for_pages(session: Session, page_ids, now: date
     session.execute(update(CancelOperation).where(
         CancelOperation.page_id.in_(page_ids),
         CancelOperation.state == PENDING,
-    ).values(state=EXPIRED, credential_hash=None, terminal_at=now))
+    ).values(state=EXPIRED, credential_hash=None, terminal_at=now,
+             evidence={"reason": "credential_revoked", "expired_at": now.isoformat()}))
 
 
 def expire_due_cancel_operations(session_factory, now: datetime) -> None:
@@ -167,7 +207,8 @@ def expire_due_cancel_operations(session_factory, now: datetime) -> None:
         session.execute(update(CancelOperation).where(
             CancelOperation.state == PENDING,
             CancelOperation.expires_at <= now,
-        ).values(state=EXPIRED, credential_hash=None, terminal_at=now))
+        ).values(state=EXPIRED, credential_hash=None, terminal_at=now,
+                 evidence={"reason": "credential_expired", "expired_at": now.isoformat()}))
 
 
 def order_product_summary(session: Session, order_id: UUID) -> str:

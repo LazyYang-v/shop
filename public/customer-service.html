@@ -47,6 +47,7 @@
     .confirmation-card button { min-height: 44px; padding: 8px 18px; border: 0; border-radius: 7px; background: #e7d7c8; color: #7b6a5c; font-size: 16px; cursor: not-allowed; }
     .confirmation-card button[data-confirmation-action] { opacity: .85; }
     .confirmation-card .invalid-note { margin: 10px 0 0; color: #b3261e; font-size: 14px; }
+    .confirmation-card .reconcile-action { min-height: 40px; margin-top: 10px; background: #fff; color: #8a4315; cursor: pointer; }
     .hot { position: absolute; top: -8px; left: -2px; display: grid; place-items: center; width: 21px; height: 21px; border-radius: 50%; background: #f44e42; color: #fff; font-size: 13px; font-weight: 400; }
     .chevron { position: absolute; right: 14px; top: 50%; width: 9px; height: 9px; border-top: 1.5px solid currentColor; border-right: 1.5px solid currentColor; transform: translateY(-50%) rotate(45deg); }
     .message.user { justify-content: flex-end; }
@@ -193,6 +194,9 @@
     let consultationBusy = false;
     let renewalTimer = null;
     const confirmationTimers = new Map();
+    const reconciliationStates = new Map();
+    const RECONCILE_WINDOW_MS = 5 * 60 * 1000;
+    const RECONCILE_DELAYS_MS = [2000, 4000, 8000];
     const handoffKey = 'shop.customer-service.handoff';
     function saveHandoff(token) {
       try {
@@ -210,6 +214,7 @@
     function invalidateConsultation() {
       consultation = null;
       confirmation = null;
+      for (const operationId of reconciliationStates.keys()) stopReconciliation(operationId);
       selectedOrderNumber = null;
       clearTimeout(renewalTimer);
       saveHandoff(null);
@@ -226,6 +231,7 @@
       section.append(expired);
     }
     function expireConfirmationCards(note) {
+      for (const operationId of reconciliationStates.keys()) stopReconciliation(operationId);
       for (const timer of confirmationTimers.values()) clearTimeout(timer);
       confirmationTimers.clear();
       confirmation = null;
@@ -580,6 +586,169 @@
       messages.scrollTop = messages.scrollHeight;
       return section;
     }
+    function appendManualReconcile(current, pending) {
+      if (current.section.querySelector('[data-reconcile-action]') || !current.manualCheckAvailable) return;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'reconcile-action';
+      button.dataset.reconcileAction = 'true';
+      button.textContent = '手动检查取消结果';
+      button.addEventListener('click', () => {
+        current.manualCheckAvailable = false;
+        button.disabled = true;
+        void reconcileCancellation(current, pending, true).finally(() => {
+          if (current.section.contains(button)) button.remove();
+        });
+      });
+      current.section.append(button);
+    }
+    function stopReconciliation(operationId) {
+      const state = reconciliationStates.get(operationId);
+      if (!state) return;
+      state.stopped = true;
+      if (state.timer) clearTimeout(state.timer);
+      reconciliationStates.delete(operationId);
+    }
+    function scheduleReconciliation(current, pending, state, manual = false) {
+      if (state.stopped) return;
+      const elapsed = Date.now() - state.startedAt;
+      if (!manual && elapsed >= RECONCILE_WINDOW_MS) {
+        state.stopped = true;
+        reconciliationStates.delete(current.operationId);
+        pending.textContent = `无法核验取消结果；操作编号：${current.operationId}。请查看本人订单。页面没有重试取消。`;
+        if (current.manualCheckAvailable) appendManualReconcile(current, pending);
+        return;
+      }
+      let delay;
+      if (manual) delay = 0;
+      else if (state.pollCount < RECONCILE_DELAYS_MS.length) delay = RECONCILE_DELAYS_MS[state.pollCount];
+      else delay = 15000;
+      const jitter = manual ? 0 : Math.floor(Math.random() * 501);
+      const wait = manual ? 0 : Math.min(delay + jitter, Math.max(0, RECONCILE_WINDOW_MS - elapsed));
+      state.timer = setTimeout(() => { void reconcileCancellation(current, pending, manual); }, wait);
+    }
+    async function reconcileCancellation(current, pending, manual = false) {
+      let state = reconciliationStates.get(current.operationId);
+      if (!state) {
+        state = { startedAt: Date.now(), pollCount: 0, timer: null, inFlight: false,
+          stopped: false, manualCheckAvailable: true };
+        reconciliationStates.set(current.operationId, state);
+      }
+      if (state.inFlight || state.stopped) return;
+      state.inFlight = true;
+      clearTimeout(state.timer);
+      try {
+        const remaining = RECONCILE_WINDOW_MS - (Date.now() - state.startedAt);
+        if (!manual && remaining <= 0) {
+          state.stopped = true;
+          reconciliationStates.delete(current.operationId);
+          pending.textContent = `无法核验取消结果；操作编号：${current.operationId}。请查看本人订单。页面没有重试取消。`;
+          if (current.manualCheckAvailable) appendManualReconcile(current, pending);
+          return;
+        }
+        const checked = await withSessionLane(async () => {
+          const csrfResponse = await fetch('/api/auth/csrf', { credentials: 'same-origin', cache: 'no-store',
+            signal: AbortSignal.timeout(manual ? 10000 : Math.max(1, Math.min(10000, remaining))) });
+          if (csrfResponse.status === 401 || csrfResponse.status === 403) return { authenticationLost: true };
+          if (!csrfResponse.ok) throw new Error('reconcile_credentials_unavailable');
+          const csrf = await csrfResponse.json();
+          const requestRemaining = RECONCILE_WINDOW_MS - (Date.now() - state.startedAt);
+          if (!manual && requestRemaining <= 0) return { windowElapsed: true };
+          const response = await fetch('/api/customer-service/cancel/reconcile', {
+            method: 'POST', credentials: 'same-origin', cache: 'no-store',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf.csrf_token },
+            body: JSON.stringify({ page_instance_id: current.pageInstanceId,
+              consultation_id: current.consultationId, operation_id: current.operationId }),
+            signal: AbortSignal.timeout(manual ? 10000 : Math.max(1, Math.min(10000, requestRemaining))),
+          });
+          let result;
+          try { result = await response.json(); } catch { result = null; }
+          return { response, result };
+        });
+        if (checked.authenticationLost) {
+          state.stopped = true;
+          reconciliationStates.delete(current.operationId);
+          pending.textContent = `登录状态已失效，取消结果仍待核验；操作编号：${current.operationId}。请登录后查看本人订单。`;
+          showLogin();
+          return;
+        }
+        if (checked.windowElapsed) {
+          state.stopped = true;
+          reconciliationStates.delete(current.operationId);
+          pending.textContent = `无法核验取消结果；操作编号：${current.operationId}。请查看本人订单。页面没有重试取消。`;
+          if (current.manualCheckAvailable) appendManualReconcile(current, pending);
+          return;
+        }
+        const { response, result } = checked;
+        if (response.status === 401 || response.status === 403 || response.status === 410) {
+          state.stopped = true;
+          reconciliationStates.delete(current.operationId);
+          pending.textContent = `当前登录或咨询页面无法核验取消结果；操作编号：${current.operationId}。请重新登录并查看本人订单。`;
+          if (response.status === 401) showLogin();
+          return;
+        }
+        if (response.ok && result?.data?.operation_id === current.operationId
+            && ['executed', 'rejected', 'expired'].includes(result.status)
+            && result.data.evidence && typeof result.data.evidence === 'object') {
+          state.stopped = true;
+          reconciliationStates.delete(current.operationId);
+          if (result.status === 'executed') {
+            const evidence = result.data.evidence;
+            if (evidence.order_id === current.orderNumber && evidence.status === 'closed'
+                && evidence.close_reason === 'buyer_cancelled') {
+              const orderResponse = await fetch(`/api/orders/${encodeURIComponent(current.orderNumber)}`, {
+                credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(3000),
+              });
+              if (orderResponse.ok) {
+                const order = await orderResponse.json();
+                if (order?.id === current.orderNumber && order.status === evidence.status
+                    && order.close_reason === evidence.close_reason) {
+                  pending.textContent = '取消成功：本人订单已关闭，原因是买家取消。';
+                  expireConfirmationCard(current.section, '本次取消已由商城订单与操作证据确认。');
+                  return;
+                }
+              }
+            }
+            pending.textContent = `已取得执行证据，但无法核对当前订单；操作编号：${current.operationId}。请查看本人订单。`;
+            return;
+          }
+          const reason = result.data.evidence.reason;
+          pending.textContent = result.status === 'expired'
+            ? reason === 'reconciled_unknown_result'
+              ? `未发现已提交的取消执行，旧确认资格已撤销；操作编号：${current.operationId}。请查看本人订单。`
+              : `取消方案已失效；操作编号：${current.operationId}。请查看本人订单。`
+            : `取消未执行；操作编号：${current.operationId}。请查看本人订单。`;
+          expireConfirmationCard(current.section, '本次操作已结束，页面不会再次提交取消。');
+          return;
+        }
+        if (manual) {
+          state.stopped = true;
+          reconciliationStates.delete(current.operationId);
+          pending.textContent = `仍无法核验取消结果；操作编号：${current.operationId}。请查看本人订单。`;
+          return;
+        }
+        state.pollCount += 1;
+        scheduleReconciliation(current, pending, state, false);
+      } catch {
+        if (manual) {
+          state.stopped = true;
+          reconciliationStates.delete(current.operationId);
+          pending.textContent = `仍无法核验取消结果；操作编号：${current.operationId}。请查看本人订单。`;
+        } else {
+          state.pollCount += 1;
+          scheduleReconciliation(current, pending, state, false);
+        }
+      } finally {
+        state.inFlight = false;
+      }
+    }
+    function beginReconciliation(current, pending) {
+      current.manualCheckAvailable = true;
+      const state = { startedAt: Date.now(), pollCount: 0, timer: null,
+        inFlight: false, stopped: false, manualCheckAvailable: true };
+      reconciliationStates.set(current.operationId, state);
+      scheduleReconciliation(current, pending, state);
+    }
     async function confirmCancellation(button) {
       const current = confirmation;
       if (!current || button.disabled || consultationBusy) return;
@@ -621,11 +790,26 @@
             appendMessage('取消方案无法在当前会话使用。');
             return;
           }
-          if (response.status === 409) {
+          if (response.status === 425 && result.status === 'processing') {
             confirmation = null;
             clearTimeoutForConfirmation(current.operationId);
-            expireConfirmationCard(current.section, '响应未能确认；请查看订单状态，不要重复点击。');
-            appendMessage(`取消结果待核验，操作编号：${current.operationId}。请查看本人订单；本页面不会自动重发取消。`);
+            expireConfirmationCard(current.section, '取消请求仍在处理中；页面不会重发取消。');
+            pending.textContent = `取消结果待核验，操作编号：${current.operationId}。页面不会重发取消。`;
+            beginReconciliation(current, pending);
+            return;
+          }
+          if ([400, 404, 409, 410, 422, 429].includes(response.status)) {
+            confirmation = null;
+            clearTimeoutForConfirmation(current.operationId);
+            const message = response.status === 429
+              ? '取消核验请求过于频繁；订单未由此响应判定为已取消。请稍后查看本人订单。'
+              : response.status === 410
+                ? '咨询页面已过期，取消请求状态无效。请重新登录并查看本人订单。'
+                : response.status === 409
+                  ? '订单状态或确认方案已变化，取消未执行。'
+                  : '取消请求参数或页面状态无效，订单未由此响应判定为已取消。';
+            expireConfirmationCard(current.section, message);
+            pending.textContent = `${message} 操作编号：${current.operationId}`;
             return;
           }
           if (!response.ok || !result || typeof result.status !== 'string') throw new Error('response_unknown');
@@ -670,8 +854,9 @@
         if (requestStarted) {
           confirmation = null;
           clearTimeoutForConfirmation(current.operationId);
-          expireConfirmationCard(current.section, '响应未能确认；请查看订单状态，不要重复点击。');
-          pending.textContent = `取消结果待核验，操作编号：${current.operationId}。请查看本人订单；本页面不会自动重发取消。`;
+          expireConfirmationCard(current.section, '响应未能确认；页面不会重发取消。');
+          pending.textContent = `取消结果待核验，操作编号：${current.operationId}。页面不会自动重发取消。`;
+          beginReconciliation(current, pending);
         } else {
           button.disabled = false;
           pending.textContent = '请求尚未发送，请检查登录状态后重试。';

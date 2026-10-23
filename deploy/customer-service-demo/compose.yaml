@@ -25,7 +25,7 @@ services:
       timeout: 3s
       retries: 12
 
-  # Deliberately opt-in: current API does not implement the approved demo guards.
+  # Deliberately opt-in: runtime acceptance gates remain outstanding.
   shop-api:
     <<: *demo-defaults
     profiles: [pending-demo-guards]
@@ -33,6 +33,21 @@ services:
     environment:
       SHOP_DATABASE_URL: postgresql+psycopg://shop_demo:${DEMO_SHOP_DB_PASSWORD}@shop-db:5432/shop_customer_service_demo
       SHOP_COOKIE_SECURE: "false"
+      SHOP_REGISTRATION_ENABLED: "false"
+      SHOP_CUSTOMER_SERVICE_DEMO_MODE: "1"
+      SHOP_CUSTOMER_SERVICE_FIXTURE_PATH: /app/demo/products.v1.json
+      SHOP_CUSTOMER_SERVICE_FIXTURE_SHA256: b730b65266d096918f8f5e085c960ed5acccf6378b3b1e222bfa379141169b1b
+      SHOP_CUSTOMER_SERVICE_BUYER_IDS: de100000-0000-4000-8000-000000000001,de100000-0000-4000-8000-000000000002
+      SHOP_CUSTOMER_SERVICE_LOG_DIRECTORY: /var/log/shop-customer-service
+    command: [uvicorn, "shop_api.app:app", --host, "0.0.0.0", --port, "8000", --no-proxy-headers, --no-access-log]
+    volumes:
+      - type: bind
+        source: ./products.v1.json
+        target: /app/demo/products.v1.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - customer-service-logs:/var/log/shop-customer-service
     ports: ["127.0.0.1:${DEMO_SHOP_PORT:-18011}:8000"]
     networks: [shop, retrieval]
     depends_on:
@@ -149,6 +164,8 @@ networks:
     internal: true
 
 volumes:
+  # New project-owned volume; provision its root as owner-only (0700) before API start.
+  customer-service-logs:
   shop-db:
   weknora-db:
   weknora-files:

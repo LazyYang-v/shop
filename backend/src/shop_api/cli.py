@@ -86,6 +86,11 @@ def main() -> None:
     subparsers.add_parser("cleanup-expired-sessions")
     subparsers.add_parser("prepare-demo-addresses")
     subparsers.add_parser("seed-demo-products")
+    demo_parser = subparsers.add_parser("initialize-customer-service-demo")
+    demo_parser.add_argument("--fixture", required=True)
+    demo_parser.add_argument("--fixture-sha256", required=True)
+    demo_parser.add_argument("--secrets-file", required=True)
+    demo_parser.add_argument("--allow-migration-seed", action="store_true")
     admin_parser = subparsers.add_parser("create-admin")
     admin_parser.add_argument("--email", required=True)
     arguments = parser.parse_args()
@@ -93,7 +98,20 @@ def main() -> None:
     database_url = os.getenv("SHOP_DATABASE_URL")
     if not database_url:
         parser.error("SHOP_DATABASE_URL must be configured")
-    if arguments.command == "cleanup-expired-sessions":
+    if arguments.command == "initialize-customer-service-demo":
+        from shop_api.customer_service_demo import initialize_customer_service_demo, read_demo_passwords
+
+        try:
+            count = initialize_customer_service_demo(
+                database_url, arguments.fixture, arguments.fixture_sha256,
+                read_demo_passwords(arguments.secrets_file),
+                allow_migration_seed=arguments.allow_migration_seed,
+            )
+        except Exception:
+            # Neither connection errors nor validation errors may expose credentials.
+            parser.exit(1, "Demo initialization refused or failed; no partial fixture was committed.\n")
+        print(f"Initialized fictional customer-service demo with {count} products and 3 identities")
+    elif arguments.command == "cleanup-expired-sessions":
         print(f"Deleted {cleanup_expired_sessions(database_url)} expired sessions")
     elif arguments.command == "prepare-demo-addresses":
         print(f"Prepared {prepare_demo_addresses(database_url)} fictional demo addresses")

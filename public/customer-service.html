@@ -91,12 +91,10 @@
       <div class="messages" id="messages" role="log" aria-label="客服聊天记录" aria-live="polite">
         <button class="history" type="button">点击查看历史咨询记录</button>
         <div class="message"><span class="avatar" aria-hidden="true">👩🏻‍💼</span><div class="bubble">亲，我是智能小蜜，很高兴为您服务！</div></div>
-        <div class="message"><span class="avatar" aria-hidden="true">👩🏻‍💼</span><div class="bubble">亲，您有任何疑问都可以向小蜜咨询哦～</div></div>
+        <div class="message"><span class="avatar" aria-hidden="true">👩🏻‍💼</span><div class="bubble">仅供专用演示买家查询虚构商品。请点击“查看演示商品”，再选择商品查询价格和库存；自由文本及政策服务尚未开放。</div></div>
         <div class="quick-questions" aria-label="热门咨询">
-          <button class="quick-question" type="button"><span class="hot">热</span>点此领取美妆加补券<span class="chevron" aria-hidden="true"></span></button>
-          <button class="quick-question" type="button"><span class="hot">热</span>点此领取超级红包<span class="chevron" aria-hidden="true"></span></button>
-          <button class="quick-question" type="button"><span class="hot">热</span>消费券问题合集<span class="chevron" aria-hidden="true"></span></button>
-          <button class="quick-question" type="button"><span class="hot">热</span>点此领取苹果数码券<span class="chevron" aria-hidden="true"></span></button>
+          <button class="quick-question" id="start-consultation" type="button">开始商品咨询<span class="chevron" aria-hidden="true"></span></button>
+          <button class="quick-question" id="list-products" type="button">查看演示商品<span class="chevron" aria-hidden="true"></span></button>
         </div>
       </div>
       <div class="composer">
@@ -141,17 +139,206 @@
       appendMessage(text.trim(), true);
       input.value = '';
       sendButton.disabled = true;
-      appendMessage('亲，已收到您的问题。当前为客服页面预览，智能客服暂未接通。您可以先在帮助中心查看购物说明，或在“我的订单”中查看订单。');
+      appendMessage('亲，商品客服功能尚未开放。您可以先在商城商品目录中查询商品信息。');
     }
     input.addEventListener('input', () => { sendButton.disabled = !input.value.trim(); });
     document.getElementById('chat-form').addEventListener('submit', event => {
       event.preventDefault();
       submitMessage(input.value);
     });
-    document.querySelectorAll('.quick-question').forEach(button => button.addEventListener('click', () => {
-      appendMessage(button.childNodes[1].textContent.trim(), true);
-      appendMessage('亲，此处为参考图中的活动入口展示，当前商城暂无可领取的优惠券或红包。');
-    }));
+    let consultation = null;
+    let consultationBusy = false;
+    let renewalTimer = null;
+    const handoffKey = 'shop.customer-service.handoff';
+    function saveHandoff(token) {
+      try {
+        if (typeof token === 'string' && /^[A-Za-z0-9_-]{43}$/.test(token)) sessionStorage.setItem(handoffKey, token);
+        else sessionStorage.removeItem(handoffKey);
+      } catch { /* Storage may be disabled; a new consultation remains available. */ }
+    }
+    function takeHandoff() {
+      try {
+        const token = sessionStorage.getItem(handoffKey);
+        sessionStorage.removeItem(handoffKey);
+        return token && /^[A-Za-z0-9_-]{43}$/.test(token) ? token : null;
+      } catch { return null; }
+    }
+    function invalidateConsultation() {
+      consultation = null;
+      clearTimeout(renewalTimer);
+      saveHandoff(null);
+      messages.querySelectorAll('[data-consultation-action]').forEach(button => { button.disabled = true; });
+    }
+    function scheduleRenewal() {
+      clearTimeout(renewalTimer);
+      if (!consultation) return;
+      const current = consultation;
+      renewalTimer = setTimeout(async () => {
+        if (consultation !== current) return;
+        try {
+          const renewed = await consultationPost('pages/renew', {
+            page_instance_id: current.page_instance_id, handoff_token: current.handoff_token,
+          });
+          if (consultation === current) {
+            if (renewed) scheduleRenewal();
+            else invalidateConsultation();
+          }
+        } catch {
+          appendMessage('咨询续期未能确认，请重新开始商品咨询。');
+          invalidateConsultation();
+        }
+      }, 30000);
+    }
+    window.addEventListener('pagehide', () => clearTimeout(renewalTimer));
+    window.addEventListener('pageshow', event => {
+      if (event.persisted) invalidateConsultation();
+    });
+    async function consultationPost(path, payload) {
+      const csrfResponse = await fetch('/api/auth/csrf', { credentials: 'same-origin', cache: 'no-store' });
+      if (!csrfResponse.ok) throw new Error('Authentication unavailable');
+      const csrf = await csrfResponse.json();
+      const response = await fetch(`/api/customer-service/${path}`, {
+        method: 'POST', credentials: 'same-origin', cache: 'no-store',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf.csrf_token },
+        body: JSON.stringify(payload), signal: AbortSignal.timeout(10000),
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        if ([401, 403, 409, 410].includes(response.status)) invalidateConsultation();
+        appendMessage(response.status === 410 ? '咨询页面已过期，请重新开始商品咨询。'
+          : response.status === 401 ? '请先登录专用演示买家账号。'
+          : response.status === 409 ? '咨询状态已变化，请重新开始。'
+          : response.status === 429 ? '咨询过于频繁，请稍后重试。'
+          : '商品咨询暂不可用，请稍后重试。');
+        return null;
+      }
+      return result;
+    }
+    async function consultProducts(text = '查看演示商品') {
+      if (consultationBusy) return;
+      consultationBusy = true;
+      try {
+        if (!consultation) {
+          const handoff = takeHandoff();
+          const created = await consultationPost('pages', handoff ? { handoff_token: handoff } : {});
+          if (!created) return;
+          consultation = created.data;
+          saveHandoff(consultation.handoff_token);
+          scheduleRenewal();
+        }
+        const result = await consultationPost('messages', {
+          page_instance_id: consultation.page_instance_id,
+          consultation_id: consultation.consultation_id,
+          client_message_id: crypto.randomUUID(), text,
+        });
+        if (!result) return;
+        if (!result.data || typeof result.data.reply !== 'string' || !Array.isArray(result.data.cards)) throw new Error('Invalid consultation');
+        appendMessage(`${result.data.reply}\n查询时间：${result.queried_at}\n请求标识：${result.request_id}`);
+        for (const card of result.data.cards) {
+          if (card.type === 'product_page' && /^查看演示商品第([1-9][0-9]?|100)页$/.test(card.selection_text)) {
+            const button = document.createElement('button');
+            button.className = 'quick-question';
+            button.type = 'button';
+            button.dataset.consultationAction = 'true';
+            button.textContent = '下一页咨询商品';
+            button.addEventListener('click', () => consultProducts(card.selection_text));
+            messages.append(button);
+            continue;
+          }
+          if (card.type !== 'product' || !validProduct(card.product)) continue;
+          appendMessage(productFacts(card.product));
+          if (card.selection_text !== `查看演示商品：${card.product.id}`) continue;
+          const button = document.createElement('button');
+          button.className = 'quick-question';
+          button.type = 'button';
+          button.dataset.consultationAction = 'true';
+          button.textContent = `咨询 ${card.product.name} 的价格与库存`;
+          button.addEventListener('click', () => consultProducts(card.selection_text));
+          messages.append(button);
+        }
+      } catch {
+        appendMessage('商品咨询响应未能确认，请重新操作；页面不会自动重发咨询。');
+      } finally {
+        consultationBusy = false;
+      }
+    }
+    document.getElementById('start-consultation').addEventListener('click', () => consultProducts());
+    let queryingProducts = false;
+    function productFacts(product) {
+      return `${product.name}\n分类：${product.category}\n价格：¥${product.price}\n可售库存：${product.stock}\n状态：${product.is_listed ? '上架' : '下架'}`;
+    }
+    function validProduct(product) {
+      return product && /^[0-9a-f-]{36}$/i.test(product.id)
+        && typeof product.name === 'string' && typeof product.category === 'string'
+        && typeof product.price === 'string' && /^\d+\.\d{2}$/.test(product.price)
+        && Number.isInteger(product.stock) && product.stock >= 0
+        && typeof product.is_listed === 'boolean';
+    }
+    async function queryProducts(productId = null, page = 1) {
+      if (queryingProducts) return;
+      queryingProducts = true;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      try {
+        const path = productId
+          ? `/api/customer-service/products/${encodeURIComponent(productId)}`
+          : `/api/customer-service/products?page=${page}&page_size=10`;
+        const response = await fetch(path, { credentials: 'same-origin', cache: 'no-store', signal: controller.signal });
+        if (!response.ok) {
+          if (response.status === 401) appendMessage('请先登录专用演示买家账号，再查询商品。');
+          else if (response.status === 403) {
+            const error = await response.json().catch(() => null);
+            appendMessage(productId && error?.code === 'resource_unavailable'
+              ? '未找到可访问的演示商品，请重新查看商品列表或确认演示账号。'
+              : '当前账号无法访问演示商品客服。');
+          }
+          else if (response.status === 429) {
+            const delay = Number(response.headers.get('Retry-After'));
+            appendMessage(Number.isInteger(delay) && delay > 0 && delay <= 3600
+              ? `查询过于频繁，请在 ${delay} 秒后重试。` : '查询过于频繁，请稍后重试。');
+          } else appendMessage('商品查询服务暂不可用，请稍后重试。');
+          return;
+        }
+        const result = await response.json();
+        if (typeof result.request_id !== 'string' || typeof result.queried_at !== 'string'
+          || !Number.isFinite(Date.parse(result.queried_at))) throw new Error('Invalid query response');
+        if (result.status === 'not_found') {
+          appendMessage('未找到该演示商品，请重新查看商品列表。');
+          return;
+        }
+        if (!['ok', 'empty'].includes(result.status)) throw new Error('Invalid query status');
+        const products = productId ? [result.data] : result.data?.items;
+        if (!Array.isArray(products) || products.length > 20 || !products.every(validProduct)) throw new Error('Invalid product facts');
+        appendMessage(`商品目录查询\n查询时间：${result.queried_at}\n请求标识：${result.request_id}`);
+        if (!products.length) appendMessage('未找到可访问的商品。库存以查询时为准，暂不提供补货日期。');
+        for (const product of products) {
+          appendMessage(productFacts(product));
+          if (!productId) {
+            const button = document.createElement('button');
+            button.className = 'quick-question';
+            button.type = 'button';
+            button.textContent = `查询 ${product.name} 的最新价格与库存`;
+            button.addEventListener('click', () => queryProducts(product.id));
+            messages.append(button);
+          }
+        }
+        if (!productId && result.data.has_more === true && page < 100) {
+          const button = document.createElement('button');
+          button.className = 'quick-question';
+          button.type = 'button';
+          button.textContent = '下一页演示商品';
+          button.addEventListener('click', () => queryProducts(null, page + 1));
+          messages.append(button);
+        }
+        messages.scrollTop = messages.scrollHeight;
+      } catch {
+        appendMessage('商品查询服务暂不可用，请稍后重试。');
+      } finally {
+        clearTimeout(timer);
+        queryingProducts = false;
+      }
+    }
+    document.getElementById('list-products').addEventListener('click', () => queryProducts());
     document.querySelector('.history').addEventListener('click', () => appendMessage('当前页面中的消息即为本次咨询记录，暂未接入历史咨询记录。'));
     document.querySelector('.feedback').addEventListener('click', () => appendMessage('亲，反馈服务暂未接通。如需查看商城使用说明，请前往帮助中心。'));
     ['picture-button', 'camera-button'].forEach(id => document.getElementById(id).addEventListener('click', () => appendMessage('亲，图片消息暂未接通，您可以先在输入框中描述问题。')));

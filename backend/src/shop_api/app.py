@@ -1,11 +1,18 @@
 import asyncio
+import hashlib
+import time
 import logging
 import os
 from contextlib import asynccontextmanager, suppress
 from collections.abc import Generator
-from uuid import UUID
+from datetime import UTC
+from uuid import UUID, uuid4
 
-from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Cookie, Depends, FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -13,6 +20,10 @@ from shop_api.addresses import AddressInput, AddressListResponse, AddressPatch, 
 from shop_api.catalog import CatalogQuery, Product, ProductListResponse, list_categories, list_products
 from shop_api.cart import AddCartItem, CartItem, CartResponse, UpdateCartItem, add_item, read_cart, update_item
 from shop_api.database import make_session_factory
+from shop_api.customer_service import CustomerServiceUnavailable, SafeLogWriter, SharedLimiter, acquire_query_turn, check_fixture, cleanup_rate_limits
+from shop_api.customer_service_products import ProductTools
+from shop_api.customer_service_model_budget import ModelBudget
+from shop_api.customer_service_consultations import build_consultation_router, cleanup_consultations
 from shop_api.expiry import expire_orders, expiry_loop
 from shop_api.orders import CheckoutInput, Order, OrderListResponse, OrderResponse, ShipmentInput, cancel_order, confirm_receipt, create_order, get_order, list_orders, read_order, ship_order, simulate_payment
 from shop_api.admin_catalog import build_admin_catalog_router
@@ -47,16 +58,26 @@ def create_app(database_url: str | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI):
         try:
+            with factory() as session:
+                initialize_customer_service_guards(application, session)
+        except Exception as error:
+            logging.getLogger(__name__).warning("customer_service_guards_unavailable error=%s", type(error).__name__)
+            application.state.customer_service_enabled = False
+        try:
             await asyncio.to_thread(expire_orders, factory, application.state.clock())
         except Exception:
             logging.getLogger(__name__).exception("Startup order expiry scan failed; periodic scan will retry")
         task = asyncio.create_task(expiry_loop(factory, clock=lambda: application.state.clock()))
+        customer_service_task = asyncio.create_task(customer_service_maintenance(application))
         try:
             yield
         finally:
             task.cancel()
+            customer_service_task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+            with suppress(asyncio.CancelledError):
+                await customer_service_task
             factory.kw["bind"].dispose()
 
     app = FastAPI(title="Shop Portfolio API", version="0.1.0", lifespan=lifespan)
@@ -69,6 +90,55 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     current_session = make_current_session_dependency(session_dependency, clock=lambda: app.state.clock())
     app.state.session_factory = factory
+    app.state.customer_service_enabled = False
+    app.state.customer_service_limiter = SharedLimiter(factory)
+    app.state.customer_service_log_writer = None
+    app.state.customer_service_fixtures = {}
+    app.state.customer_service_buyer_ids = set()
+
+    async def customer_service_maintenance(application: FastAPI) -> None:
+        next_daily_cleanup = time.monotonic()
+        next_hourly_cleanup = time.monotonic() + 3600
+        while application.state.customer_service_enabled:
+            await asyncio.sleep(30)
+            try:
+                await asyncio.to_thread(cleanup_consultations, factory, application.state.clock())
+                await asyncio.to_thread(ModelBudget(factory).reap_expired)
+                if time.monotonic() >= next_daily_cleanup:
+                    await asyncio.to_thread(ModelBudget(factory).prune_ended)
+                    next_daily_cleanup = time.monotonic() + 86400
+                if time.monotonic() >= next_hourly_cleanup:
+                    await asyncio.to_thread(application.state.customer_service_log_writer.prune, application.state.clock())
+                    await asyncio.to_thread(cleanup_rate_limits, factory, application.state.clock())
+                    next_hourly_cleanup = time.monotonic() + 3600
+            except Exception as error:
+                logging.getLogger(__name__).warning("customer_service_maintenance_failed error=%s", type(error).__name__)
+
+    def initialize_customer_service_guards(application: FastAPI, session: Session) -> None:
+        fixture_path = os.getenv("SHOP_CUSTOMER_SERVICE_FIXTURE_PATH")
+        fixture_digest = os.getenv("SHOP_CUSTOMER_SERVICE_FIXTURE_SHA256")
+        log_directory = os.getenv("SHOP_CUSTOMER_SERVICE_LOG_DIRECTORY")
+        buyer_ids_raw = os.getenv("SHOP_CUSTOMER_SERVICE_BUYER_IDS", "")
+        if os.getenv("SHOP_CUSTOMER_SERVICE_DEMO_MODE") != "1" or not fixture_path or not fixture_digest or not log_directory or not buyer_ids_raw:
+            return
+        try:
+            buyer_ids = {UUID(value.strip()) for value in buyer_ids_raw.split(",") if value.strip()}
+            if len(buyer_ids) != 2:
+                raise CustomerServiceUnavailable
+            approved_buyers = set(session.scalars(select(User.id).where(
+                User.id.in_(buyer_ids), User.role == Role.BUYER.value, User.is_active.is_(True)
+            )).all())
+            if approved_buyers != buyer_ids:
+                raise CustomerServiceUnavailable
+            fixtures = check_fixture(session, fixture_path, fixture_digest)
+            writer = SafeLogWriter(log_directory)
+            writer.verify()
+            application.state.customer_service_fixtures = fixtures
+            application.state.customer_service_buyer_ids = buyer_ids
+            application.state.customer_service_log_writer = writer
+            application.state.customer_service_enabled = True
+        except CustomerServiceUnavailable:
+            logging.getLogger(__name__).warning("customer_service_guards_unavailable error=fixture_verification_failed")
     app.include_router(build_admin_catalog_router(session_dependency, current_session))
 
     @app.get("/api/products", response_model=ProductListResponse)
@@ -82,6 +152,143 @@ def create_app(database_url: str | None = None) -> FastAPI:
     ) -> ProductListResponse:
         query = CatalogQuery(q=q, category=category, sort=sort, page=page, page_size=page_size)
         return list_products(session, query)
+
+    class CustomerServiceRoute(APIRoute):
+        def get_route_handler(self):
+            handler = super().get_route_handler()
+
+            async def handle(request: Request) -> Response:
+                request.state.customer_service_request_id = str(uuid4())
+                try:
+                    result = await handler(request)
+                except RequestValidationError:
+                    result = customer_service_error(request, 422)
+                except StarletteHTTPException as error:
+                    result = customer_service_error(request, error.status_code, error.headers)
+                except Exception:
+                    # Never expose or log exception objects, request bodies or credentials.
+                    logging.getLogger(__name__).warning(
+                        "customer_service_request_failed request_id=%s error=dependency_unavailable",
+                        request.state.customer_service_request_id,
+                    )
+                    result = customer_service_error(request, 503)
+                result.headers["Cache-Control"] = "no-store"
+                return result
+
+            return handle
+
+    def customer_service_error(request: Request, status_code: int, headers=None) -> JSONResponse:
+        code, message = {
+            401: ("authentication_required", "需要登录"),
+            403: ("resource_unavailable", "未找到可访问的记录"),
+            422: ("invalid_input", "查询参数无效"),
+            425: ("busy", "已有查询正在处理"),
+            429: ("rate_limited", "查询过于频繁"),
+            503: ("dependency_unavailable", "商品查询暂不可用"),
+        }.get(status_code, ("internal_error", "客服请求失败"))
+        return JSONResponse(
+            status_code=status_code,
+            headers=headers,
+            content={
+                "request_id": request.state.customer_service_request_id,
+                "queried_at": app.state.clock().astimezone(UTC).isoformat(),
+                "status": "unavailable" if status_code == 503 else "processing" if status_code == 425 else "error",
+                "data": None,
+                "code": code,
+                "message": message,
+            },
+        )
+
+    customer_service_router = APIRouter(prefix="/api/customer-service", route_class=CustomerServiceRoute)
+
+    def require_customer_service_rate_limits(request: Request) -> None:
+        if request.client is None:
+            raise HTTPException(status_code=503, detail="客服查询保护暂不可用")
+        keys = (
+            (f"session:{hashlib.sha256(request.cookies.get('shop_session', '').encode()).hexdigest()}", 20),
+            (f"ip:{hashlib.sha256(request.client.host.encode()).hexdigest()}", 60),
+        )
+        try:
+            for key, limit in keys:
+                allowed, retry_after = app.state.customer_service_limiter.allow(key, limit, 60, app.state.clock())
+                if not allowed:
+                    raise HTTPException(status_code=429, detail="查询过于频繁", headers={"Retry-After": str(retry_after)})
+        except CustomerServiceUnavailable:
+            raise HTTPException(status_code=503, detail="客服查询保护暂不可用") from None
+
+    @customer_service_router.get("/products")
+    def customer_service_products(
+        request: Request,
+        response: Response,
+        record: AuthSession = Depends(current_session),
+        buyer_session: Session = Depends(session_dependency),
+        q: str = Query(default="", max_length=100),
+        category: str | None = Query(default=None, max_length=64),
+        page: int = Query(default=1, ge=1, le=100),
+        page_size: int = Query(default=10, ge=1, le=20),
+        session: Session = Depends(session_dependency),
+    ) -> dict[str, object]:
+        response.headers["Cache-Control"] = "no-store"
+        if not app.state.customer_service_enabled:
+            raise HTTPException(status_code=503, detail="客服商品查询暂不可用")
+        buyer = require_role(buyer_session, record, Role.BUYER)
+        if buyer.id not in app.state.customer_service_buyer_ids:
+            raise HTTPException(status_code=403, detail="无权访问客服商品查询")
+        if set(request.query_params) - {"q", "category", "page", "page_size"}:
+            raise HTTPException(status_code=422, detail="查询参数无效")
+        request_id = request.state.customer_service_request_id
+        started = time.monotonic()
+        if not acquire_query_turn(session, record.id):
+            raise HTTPException(status_code=425, detail="已有查询正在处理")
+        require_customer_service_rate_limits(request)
+        try:
+            result = ProductTools(session, app.state.customer_service_fixtures, request_id, app.state.clock).call(
+                "list_products", {"keyword": q, "category": category, "page": page, "page_size": page_size},
+            )
+        except Exception as error:
+            app.state.customer_service_log_writer.write(request_id, "list_products", "dependency_unavailable", int((time.monotonic() - started) * 1000), 1, app.state.clock())
+            logging.getLogger(__name__).warning("customer_service_query_failed request_id=%s error=%s", request_id, type(error).__name__)
+            raise HTTPException(status_code=503, detail="商品查询暂不可用") from None
+        app.state.customer_service_log_writer.write(request_id, "list_products", "", int((time.monotonic() - started) * 1000), len(result["data"]["items"]), app.state.clock())
+        return result
+
+    @customer_service_router.get("/products/{product_id}")
+    def customer_service_product(
+        product_id: UUID,
+        request: Request,
+        response: Response,
+        record: AuthSession = Depends(current_session),
+        buyer_session: Session = Depends(session_dependency),
+        session: Session = Depends(session_dependency),
+    ) -> dict[str, object]:
+        response.headers["Cache-Control"] = "no-store"
+        if not app.state.customer_service_enabled:
+            raise HTTPException(status_code=503, detail="客服商品查询暂不可用")
+        buyer = require_role(buyer_session, record, Role.BUYER)
+        if buyer.id not in app.state.customer_service_buyer_ids:
+            raise HTTPException(status_code=403, detail="无权访问客服商品查询")
+        if request.query_params:
+            raise HTTPException(status_code=422, detail="查询参数无效")
+        request_id = request.state.customer_service_request_id
+        started = time.monotonic()
+        if not acquire_query_turn(session, record.id):
+            raise HTTPException(status_code=425, detail="已有查询正在处理")
+        require_customer_service_rate_limits(request)
+        try:
+            result = ProductTools(session, app.state.customer_service_fixtures, request_id, app.state.clock).call(
+                "get_product", {"product_id": str(product_id)},
+            )
+        except HTTPException:
+            raise
+        except Exception as error:
+            app.state.customer_service_log_writer.write(request_id, "get_product", "dependency_unavailable", int((time.monotonic() - started) * 1000), 1, app.state.clock())
+            logging.getLogger(__name__).warning("customer_service_lookup_failed request_id=%s error=%s", request_id, type(error).__name__)
+            raise HTTPException(status_code=503, detail="商品查询暂不可用") from None
+        app.state.customer_service_log_writer.write(request_id, "get_product", "", int((time.monotonic() - started) * 1000), 1, app.state.clock())
+        return result
+
+    app.include_router(customer_service_router)
+    app.include_router(build_consultation_router(session_dependency, current_session))
 
     @app.get("/api/categories")
     def get_categories(session: Session = Depends(session_dependency)) -> dict[str, list[str]]:
@@ -342,6 +549,8 @@ def create_app(database_url: str | None = None) -> FastAPI:
         csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
         origin: str | None = Header(default=None),
     ) -> dict[str, str]:
+        if os.getenv("SHOP_CUSTOMER_SERVICE_DEMO_MODE") == "1" or os.getenv("SHOP_REGISTRATION_ENABLED", "true").lower() != "true":
+            raise HTTPException(status_code=403, detail="演示环境不开放注册")
         record = find_session(db, raw_session)
         if record is None or record.kind != "anonymous":
             raise HTTPException(status_code=403, detail="请重新获取 CSRF Token")

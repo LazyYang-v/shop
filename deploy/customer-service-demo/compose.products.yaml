@@ -1,0 +1,71 @@
+name: shop-customer-service-demo
+services:
+  shop-db:
+    image: postgres@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+    environment:
+      POSTGRES_USER: shop_demo
+      POSTGRES_PASSWORD: ${DEMO_SHOP_DB_PASSWORD:?required}
+      POSTGRES_DB: shop_customer_service_demo
+    volumes: [shop-db:/var/lib/postgresql/data]
+    networks: [shop]
+    logging: {driver: none}
+    restart: "no"
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U shop_demo -d shop_customer_service_demo"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  shop-api:
+    image: ${DEMO_SHOP_API_IMAGE:?required immutable local image ID}
+    user: "10001:10001"
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=16m,mode=1777"]
+    environment:
+      SHOP_DATABASE_URL: postgresql+psycopg://shop_demo:${DEMO_SHOP_DB_PASSWORD}@shop-db:5432/shop_customer_service_demo
+      SHOP_COOKIE_SECURE: "false"
+      SHOP_REGISTRATION_ENABLED: "false"
+      SHOP_CUSTOMER_SERVICE_DEMO_MODE: "1"
+      SHOP_CUSTOMER_SERVICE_FIXTURE_PATH: /app/demo/products.v1.json
+      SHOP_CUSTOMER_SERVICE_FIXTURE_SHA256: b730b65266d096918f8f5e085c960ed5acccf6378b3b1e222bfa379141169b1b
+      SHOP_CUSTOMER_SERVICE_BUYER_IDS: de100000-0000-4000-8000-000000000001,de100000-0000-4000-8000-000000000002
+      SHOP_CUSTOMER_SERVICE_LOG_DIRECTORY: /var/log/shop-customer-service
+    volumes:
+      - type: bind
+        source: ./products.v1.json
+        target: /app/demo/products.v1.json
+        read_only: true
+        bind: {create_host_path: false}
+      - customer-service-logs:/var/log/shop-customer-service
+    networks: [shop]
+    depends_on:
+      shop-db: {condition: service_healthy}
+    logging: {driver: none}
+    restart: "no"
+  shop-web:
+    image: nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+    user: "10001:10001"
+    entrypoint: [nginx, -g, "daemon off;"]
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=16m,mode=1777"]
+    volumes:
+      - type: bind
+        source: ./nginx-shop.conf
+        target: /etc/nginx/nginx.conf
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ../../public/customer-service.html
+        target: /usr/share/nginx/html/customer-service.html
+        read_only: true
+        bind: {create_host_path: false}
+    ports: ["127.0.0.1:${DEMO_SHOP_PORT:-18011}:8080"]
+    networks: [shop, ingress]
+    depends_on: [shop-api]
+    logging: {driver: none}
+    restart: "no"
+networks:
+  shop: {internal: true}
+  ingress: {}
+volumes:
+  shop-db:
+  customer-service-logs:

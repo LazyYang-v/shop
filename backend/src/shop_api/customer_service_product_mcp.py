@@ -69,6 +69,10 @@ def verified_result(result, name):
 
 def product_mcp_app(tools):
     app = FastAPI()
+    definitions = getattr(tools, 'tool_schemas', TOOLS)
+    names = {tool['name'] for tool in definitions}
+    server_name = getattr(tools, 'server_name', 'shop-products')
+    verify = getattr(tools, 'verify_result', verified_result)
 
     @app.post('/mcp')
     async def rpc(request: Request):
@@ -95,14 +99,14 @@ def product_mcp_app(tools):
                 if params != {'protocolVersion': VERSION, 'capabilities': {}, 'clientInfo': {'name': 'shop-local', 'version': '1'}}:
                     raise ValueError
                 result = {'protocolVersion': VERSION, 'capabilities': {'tools': {'listChanged': False}},
-                          'serverInfo': {'name': 'shop-products', 'version': '1'}}
+                          'serverInfo': {'name': server_name, 'version': '1'}}
             elif method == 'tools/list' and params == {}:
-                result = {'tools': TOOLS}
+                result = {'tools': definitions}
             elif method == 'tools/call' and set(params) == {'name', 'arguments'}:
                 name = params['name']
-                if name not in {'list_products', 'get_product'} or not isinstance(params['arguments'], dict):
+                if name not in names or not isinstance(params['arguments'], dict):
                     raise ValueError
-                data = verified_result(tools.call(name, params['arguments']), name)
+                data = verify(name, tools.call(name, params['arguments']))
                 result = {'content': [{'type': 'text', 'text': json.dumps(data, separators=(',', ':'))}], 'isError': False}
             else:
                 return JSONResponse({'jsonrpc': '2.0', 'id': identifier, 'error': {'code': -32601, 'message': 'Unsupported method'}})
@@ -120,8 +124,15 @@ def product_mcp_app(tools):
     return app
 
 
-class ProductMCP:
+class CustomerServiceMCP:
+    """Private MCP client for whichever bounded tool set the caller supplies."""
+
     def __init__(self, tools, *, deadline=None, asgi_app=None):
+        self._tools = tools
+        self._definitions = getattr(tools, 'tool_schemas', TOOLS)
+        self._names = tuple(tool['name'] for tool in self._definitions)
+        self._server_name = getattr(tools, 'server_name', 'shop-products')
+        self._verify = getattr(tools, 'verify_result', verified_result)
         self._app = asgi_app if asgi_app is not None else product_mcp_app(tools)
         self._deadline = deadline if deadline is not None else time.monotonic() + 45
         self._id = 0
@@ -151,7 +162,8 @@ class ProductMCP:
 
     def initialize(self):
         result = self._request('initialize', {'protocolVersion': VERSION, 'capabilities': {}, 'clientInfo': {'name': 'shop-local', 'version': '1'}})
-        if result != {'protocolVersion': VERSION, 'capabilities': {'tools': {'listChanged': False}}, 'serverInfo': {'name': 'shop-products', 'version': '1'}}:
+        if result != {'protocolVersion': VERSION, 'capabilities': {'tools': {'listChanged': False}},
+                      'serverInfo': {'name': self._server_name, 'version': '1'}}:
             raise CustomerServiceUnavailable
         notification = self._post('/mcp', json={'jsonrpc': '2.0', 'method': 'notifications/initialized'})
         if notification.status_code != 202 or notification.content:
@@ -162,19 +174,19 @@ class ProductMCP:
         if not self._ready:
             raise CustomerServiceUnavailable
         result = self._request('tools/list', {})
-        if result != {'tools': TOOLS}:
+        if result != {'tools': self._definitions}:
             raise CustomerServiceUnavailable
         return result['tools']
 
     def call(self, name, arguments):
-        if not self._ready or name not in {'list_products', 'get_product'}:
+        if not self._ready or name not in self._names:
             raise CustomerServiceUnavailable
         result = self._request('tools/call', {'name': name, 'arguments': arguments})
         if (not isinstance(result, dict) or set(result) != {'content', 'isError'} or result['isError'] is not False
                 or not isinstance(result['content'], list) or len(result['content']) != 1
                 or set(result['content'][0]) != {'type', 'text'} or result['content'][0]['type'] != 'text'):
             raise CustomerServiceUnavailable
-        return verified_result(json.loads(result['content'][0]['text']), name)
+        return self._verify(name, json.loads(result['content'][0]['text']))
 
     def _post(self, path, **kwargs):
         async def send():
@@ -197,3 +209,6 @@ class ProductMCP:
 
     def close(self):
         pass
+
+
+ProductMCP = CustomerServiceMCP

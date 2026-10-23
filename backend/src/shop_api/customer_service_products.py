@@ -32,6 +32,14 @@ class GetProductArguments(BaseModel):
 
 
 class ProductTools:
+    tool_names = ('list_products', 'get_product')
+    server_name = 'shop-products'
+
+    @staticmethod
+    def verify_result(name, result):
+        from shop_api.customer_service_product_mcp import verified_result
+        return verified_result(result, name)
+
     def __init__(self, session: Session, fixtures: Mapping[str, ProductFixture], request_id: str, clock: Callable[[], datetime], *, deadline=None):
         self._session = session
         self._fixtures = fixtures
@@ -44,19 +52,22 @@ class ProductTools:
     def call(self, name: Literal['list_products', 'get_product'], arguments: dict) -> dict:
         if name not in {'list_products', 'get_product'}:
             raise HTTPException(status_code=422, detail='工具参数无效')
+        list_params: ListProductsArguments | None = None
+        detail_params: GetProductArguments | None = None
         try:
             if name == 'list_products':
-                params = ListProductsArguments.model_validate(arguments)
+                list_params = ListProductsArguments.model_validate(arguments)
+                list_params.keyword = list_params.keyword.strip().casefold()
             else:
-                params = GetProductArguments.model_validate(arguments)
-                params.product_id = str(UUID(params.product_id))
+                detail_params = GetProductArguments.model_validate(arguments)
+                detail_params.product_id = str(UUID(detail_params.product_id))
         except (ValidationError, ValueError):
             raise HTTPException(status_code=422, detail='工具参数无效') from None
+        normalized = list_params or detail_params
+        assert normalized is not None
         if self._calls >= 2:
             raise HTTPException(status_code=503, detail='商品工具额度已用完')
-        if name == 'list_products':
-            params.keyword = params.keyword.strip().casefold()
-        call_key = (name, json.dumps(params.model_dump(), sort_keys=True, separators=(',', ':')))
+        call_key = (name, json.dumps(normalized.model_dump(), sort_keys=True, separators=(',', ':')))
         if call_key in self._seen:
             raise HTTPException(status_code=422, detail='重复商品工具调用')
         self._seen.add(call_key)
@@ -64,21 +75,22 @@ class ProductTools:
         self._deadline.check()
         if len(products) != len(self._fixtures) or any(not self._fixtures[str(product.id)].matches(product) for product in products):
             raise CustomerServiceUnavailable
-        if name == 'get_product':
-            product = next((product for product in products if str(product.id) == params.product_id and product.is_listed), None)
+        if detail_params is not None:
+            product = next((product for product in products if str(product.id) == detail_params.product_id and product.is_listed), None)
             if product is None:
                 raise HTTPException(status_code=403, detail='未找到可访问的记录')
             data = self._facts(product)
             status = 'ok'
         else:
-            keyword = params.keyword.strip().casefold()
+            assert list_params is not None
+            keyword = list_params.keyword
             matching = [product for product in products if product.is_listed
                         and (not keyword or keyword in product.name.casefold())
-                        and (params.category is None or product.category == params.category)]
-            start = (params.page - 1) * params.page_size
-            items = [self._facts(product) for product in matching[start:start + params.page_size]]
-            data = {'items': items, 'total': len(matching), 'page': params.page, 'page_size': params.page_size,
-                    'has_more': start + params.page_size < len(matching)}
+                        and (list_params.category is None or product.category == list_params.category)]
+            start = (list_params.page - 1) * list_params.page_size
+            items = [self._facts(product) for product in matching[start:start + list_params.page_size]]
+            data = {'items': items, 'total': len(matching), 'page': list_params.page, 'page_size': list_params.page_size,
+                    'has_more': start + list_params.page_size < len(matching)}
             status = 'ok' if items else 'empty'
         return {'request_id': self._request_id, 'queried_at': self._clock().isoformat(), 'status': status, 'data': data}
 

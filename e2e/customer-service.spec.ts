@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test'
 
 test.beforeEach(async ({ page }) => {
   await page.route('**/api/auth/csrf', route => route.fulfill({ json: { csrf_token: 'synthetic-csrf' } }))
+  await page.route('**/api/auth/me', route => route.fulfill({ status: 401, json: { detail: '需要登录' } }))
 })
 
 const product = {
@@ -296,6 +297,95 @@ test('refresh consumes handoff only once and auth failure disables old cards', a
   await expect(page.getByRole('button', { name: '咨询 测试商品 的价格与库存' })).toBeDisabled()
   expect(await page.evaluate(() => sessionStorage.getItem('shop.customer-service.handoff'))).toBeNull()
   expect(await page.evaluate(() => localStorage.getItem('shop.customer-service.handoff'))).toBeNull()
+})
+
+test('order candidates require an explicit click before detail and never render private fields', async ({ page }) => {
+  const orderNumber = '11111111-1111-4111-8111-111111111111'
+  const candidate = {
+    order_number: orderNumber,
+    created_at: '2026-10-23T09:00:00+00:00',
+    product_summary: '测试商品 ×1',
+    total: '129.00',
+    status: 'pending_receipt',
+  }
+  const detail = {
+    ...candidate,
+    items: [{ name: '测试商品', quantity: 1 }],
+    expires_at: '2026-10-23T09:30:00+00:00',
+    close_reason: null,
+    shipping_company: '虚构速运',
+    tracking_number: 'DEMO-TRACK-001',
+    shipped_at: '2026-10-23T10:00:00+00:00',
+  }
+  const bodies: Record<string, unknown>[] = []
+  await page.route('**/api/customer-service/pages', route => route.fulfill({ status: 201, json: {
+    ...response('ok'), data: { page_instance_id: 'page-order', consultation_id: 'consultation-order' },
+  } }))
+  await page.route('**/api/customer-service/messages', async route => {
+    const body = route.request().postDataJSON()
+    bodies.push(body)
+    const data = body.selected_order_id
+      ? { reply: '已查询订单信息', cards: [{ type: 'order_detail', order: detail }], citations: [] }
+      : { reply: '请选择要查询的订单', cards: [{ type: 'order', order: candidate }], citations: [] }
+    await route.fulfill({ json: { ...response('ok'), data } })
+  })
+  await page.goto('/customer-service.html')
+  await page.getByRole('button', { name: '查询我的订单' }).click()
+  const log = page.getByRole('log', { name: '客服聊天记录' })
+  await expect(log).toContainText(`订单号：${orderNumber}`)
+  await expect(log).toContainText('商品：测试商品 ×1')
+  await expect(log).toContainText('金额：¥129.00')
+  await expect(log).toContainText('状态：待收货')
+  expect(bodies).toHaveLength(1)
+  expect(bodies[0]).toMatchObject({ text: '查询我的订单' })
+  expect(bodies[0]).not.toHaveProperty('selected_order_id')
+  await expect(log).not.toContainText('收货地址')
+  await expect(log).not.toContainText('13800138000')
+  await page.getByRole('button', { name: /查询订单 .* 的详情/ }).click()
+  await expect(log).toContainText('物流公司：虚构速运')
+  await expect(log).toContainText('运单号：DEMO-TRACK-001')
+  await expect(log).toContainText('以上仅为商城已保存的物流信息，不包含实时轨迹或预计送达时间。')
+  expect(bodies).toHaveLength(2)
+  expect(bodies[1]).toEqual({ page_instance_id: 'page-order', consultation_id: 'consultation-order',
+    client_message_id: bodies[1].client_message_id, selected_order_id: orderNumber })
+  expect(bodies[1]).not.toHaveProperty('text')
+  await expect(log).not.toContainText('收货地址')
+  await expect(log).not.toContainText('预计送达：')
+})
+
+test('anonymous order questions prompt login without showing order data', async ({ page }) => {
+  await page.route('**/api/customer-service/pages', route => route.fulfill({ status: 201, json: {
+    ...response('ok'), data: { page_instance_id: 'page-login', consultation_id: 'consultation-login' },
+  } }))
+  await page.route('**/api/customer-service/messages', route => route.fulfill({ status: 401, json: {
+    ...response('error'), code: 'authentication_required', data: null, message: '请登录后查看本人订单',
+  } }))
+  await page.route('**/api/auth/login', route => route.fulfill({ status: 401, json: { detail: '邮箱或密码错误' } }))
+  await page.goto('/customer-service.html')
+  await page.getByRole('button', { name: '登录', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '登录后查看本人订单' })
+  await expect(dialog).toBeVisible()
+  await page.locator('#login-cancel').click()
+  await expect(dialog).toBeHidden()
+  await page.getByRole('button', { name: '查询我的订单' }).click()
+  const log = page.getByRole('log', { name: '客服聊天记录' })
+  await expect(log).toContainText('请登录后查看本人订单。')
+  await expect(dialog).toBeVisible()
+  await page.getByLabel('邮箱').fill('buyer@example.com')
+  await page.getByLabel('密码').fill('portfolio-demo-pass-123')
+  await page.locator('#login-submit').click()
+  await expect(page.locator('#login-error')).toHaveText('登录失败，请检查邮箱和密码。')
+  await expect(log).not.toContainText('11111111-1111-4111-8111-111111111111')
+})
+
+test('signed-in account shows logout instead of login', async ({ page }) => {
+  await page.route('**/api/auth/me', route => route.fulfill({ json: {
+    id: '22222222-2222-4222-8222-222222222222', email: 'buyer@example.com', role: 'buyer',
+  } }))
+  await page.goto('/customer-service.html')
+  await expect(page.getByText('已登录买家')).toBeVisible()
+  await expect(page.getByRole('button', { name: '登录', exact: true })).toBeHidden()
+  await expect(page.getByRole('button', { name: '退出', exact: true })).toBeVisible()
 })
 
 test('customer-service page fits a mobile viewport', async ({ page }) => {

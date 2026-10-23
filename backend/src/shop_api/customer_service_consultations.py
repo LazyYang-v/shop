@@ -4,6 +4,7 @@ import hashlib
 import logging
 import re
 import secrets
+import time
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -17,10 +18,11 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from shop_api.customer_service import CustomerServiceUnavailable, QueryDeadline
+from shop_api.customer_service_orders import OrderTools, looks_like_order_question, understand_order
 from shop_api.customer_service_products import ProductTools
 from shop_api.database import Base
 from shop_api.identity import AuthSession, require_csrf
-from shop_api.customer_service_admission import require_product_reader, require_query_rate_limits
+from shop_api.customer_service_admission import require_demo_buyer, require_product_reader, require_query_rate_limits
 
 LIST_PRODUCTS_TEXT = "查看演示商品"
 PRODUCT_SELECTION_PREFIX = "查看演示商品："
@@ -171,6 +173,106 @@ def _rate(request: Request, key: str, limit: int) -> None:
         raise ConsultationError(429, "rate_limited", "请求过于频繁", {"Retry-After": str(retry_after)})
 
 
+def _store_response(db: Session, key: tuple, response: dict) -> None:
+    message = db.get(ConsultationMessage, key)
+    if message is None:
+        raise ConsultationError(425, 'processing', '已有请求结果未能确认')
+    message.response = response
+
+
+def _order_probe_rate(request: Request, buyer) -> None:
+    key = "order_probe:" + hashlib.sha256(str(buyer.id).encode()).hexdigest()
+    _rate(request, key, 10)
+
+
+def _order_turn(payload: MessageInput, request: Request, record: AuthSession, db: Session,
+                page: ConsultationPage, consultation: Consultation, body_hash: bytes,
+                key: tuple, deadline: float) -> dict:
+    """Deterministic order path; buyer identity comes only from the session."""
+    from shop_api.customer_service_product_mcp import CustomerServiceMCP, ProductMCPFailure
+
+    if record.kind != 'authenticated' or record.user_id is None:
+        raise ConsultationError(401, 'authentication_required', '请登录后查看本人订单')
+    try:
+        buyer = require_demo_buyer(request, record, db)
+    except HTTPException as error:
+        code, message = {401: ('authentication_required', '请登录后查看本人订单'),
+                         403: ('resource_unavailable', '未找到可访问的记录'),
+                         503: ('dependency_unavailable', '客服暂不可用')}.get(
+                             error.status_code, ('dependency_unavailable', '客服暂不可用'))
+        raise ConsultationError(error.status_code, code, message, error.headers) from None
+    require_query_rate_limits(request)
+    if payload.selected_order_id is not None:
+        try:
+            order_id = str(UUID(payload.selected_order_id))
+        except ValueError:
+            raise ConsultationError(422, 'invalid_input', '请求参数无效') from None
+        name, arguments = 'get_my_order', {'order_id': order_id}
+    else:
+        parsed = understand_order(payload.text or '')
+        if parsed is None:
+            raise ConsultationError(422, 'invalid_input', '请选择受支持的订单查询')
+        name, arguments = parsed
+        if arguments.get('order_number') is not None:
+            _order_probe_rate(request, buyer)
+
+    claim = _envelope(request, 'unavailable', code='processing', message='已有请求结果未能确认')
+    db.add(ConsultationMessage(consultation_id=consultation.id, page_id=page.id,
+                               client_message_id=UUID(payload.client_message_id), body_hash=body_hash, response=claim))
+    db.commit()
+
+    if name == 'clarify':
+        response = _envelope(request, 'needs_clarification', {
+            'reply': '当前演示仅支持查看本人订单及已保存物流；不支持退款、发券、催发货、转人工或实时物流。请提供订单号，或查看我的订单后选择一单。',
+            'cards': [], 'citations': []})
+        now = request.app.state.clock()
+        _store_response(db, key, response)
+        page.last_used_at = consultation.last_used_at = now
+        db.commit()
+        return response
+
+    query_deadline = QueryDeadline(max(0, deadline - time.monotonic()))
+    tools = OrderTools(db, buyer, request.state.customer_service_request_id,
+                       request.app.state.clock, deadline=query_deadline)
+    mcp = CustomerServiceMCP(tools, deadline=deadline)
+    try:
+        mcp.initialize()
+        mcp.tools()
+        result = mcp.call(name, arguments)
+    except ProductMCPFailure as error:
+        code = error.code
+        status_code = 403 if code == 'resource_unavailable' else 422 if code == 'invalid_input' else 503
+        message = {'resource_unavailable': '未找到可访问订单', 'invalid_input': '请求参数无效',
+                   'mcp_timeout': '订单查询超时，请稍后重试', 'mcp_unavailable': '订单查询服务暂不可用'}.get(
+                       code, '订单查询服务暂不可用')
+        raise ConsultationError(status_code, code, message) from None
+    finally:
+        mcp.close()
+    db.commit()
+
+    # Delivery revalidates auth/page and buyer membership after the tool read.
+    now = request.app.state.clock()
+    _lock_session(db, record, now)
+    require_demo_buyer(request, record, db)
+    page, consultation = _page(db, record, payload.page_instance_id, now)
+    query_deadline.check()
+    if name == 'get_my_order':
+        data = result['data']
+        cards = [{'type': 'order_detail', 'order': data}]
+        reply, status = '已查询订单信息', 'ok'
+    else:
+        candidates = result['data']['items']
+        cards = [{'type': 'order', 'order': item} for item in candidates]
+        reply, status = ('请选择要查询的订单', 'ok') if candidates else ('未找到可访问订单', 'empty')
+    response = _envelope(request, status, {'reply': reply, 'cards': cards, 'citations': []})
+    request.app.state.customer_service_log_writer.write(
+        request.state.customer_service_request_id, name, '', 0, len(cards), now)
+    _store_response(db, key, response)
+    page.last_used_at = consultation.last_used_at = now
+    db.commit()
+    return response
+
+
 def build_consultation_router(session_dependency, current_session):
     router = APIRouter(prefix="/api/customer-service", route_class=ConsultationRoute)
 
@@ -192,8 +294,8 @@ def build_consultation_router(session_dependency, current_session):
                     db: Session = Depends(session_dependency)):
         now = request.app.state.clock()
         _lock_session(db, record, now)
-        pages = db.scalars(select(ConsultationPage).where(ConsultationPage.session_id == record.id)
-                           .order_by(ConsultationPage.last_used_at, ConsultationPage.id)).all()
+        pages = list(db.scalars(select(ConsultationPage).where(ConsultationPage.session_id == record.id)
+                                .order_by(ConsultationPage.last_used_at, ConsultationPage.id)).all())
         consultation = None
         if payload.handoff_token:
             token_hash = hashlib.sha256(payload.handoff_token.encode()).digest()
@@ -257,7 +359,6 @@ def build_consultation_router(session_dependency, current_session):
                 owner.commit()
 
     def run_message(payload, request, record, db):
-        import time
         deadline = time.monotonic() + 45.0
         now = request.app.state.clock()
         if payload.text is not None and len(payload.text) > 2000:
@@ -277,8 +378,10 @@ def build_consultation_router(session_dependency, current_session):
             page.last_used_at = now
             db.commit()
             return existing.response
-        if payload.selected_order_id is not None or payload.text is None:
+        if (payload.text is None) == (payload.selected_order_id is None):
             raise ConsultationError(422, "invalid_input", "请选择受支持的商品查询")
+        if payload.selected_order_id is not None or looks_like_order_question(payload.text):
+            return _order_turn(payload, request, record, db, page, consultation, body_hash, key, deadline)
         require_query_rate_limits(request)
         intent = 'detail'
         args = {}
@@ -326,7 +429,7 @@ def build_consultation_router(session_dependency, current_session):
                     request.app.state.customer_service_log_writer.write(
                         request.state.customer_service_request_id, 'search_policy', answer.code or '',
                         int((time.monotonic() - started) * 1000), len(answer.citations), now)
-            db.get(ConsultationMessage, key).response = response
+            _store_response(db, key, response)
             page.last_used_at = consultation.last_used_at = request.app.state.clock()
             db.commit()
             return response
@@ -363,7 +466,7 @@ def build_consultation_router(session_dependency, current_session):
                                                           "cards": cards, "citations": []}, **({'code': degraded} if degraded else {}))
         # Log failure rolls back result persistence; there are no business writes here.
         request.app.state.customer_service_log_writer.write(request.state.customer_service_request_id, name, "", 0, len(products), now)
-        db.get(ConsultationMessage, key).response = response
+        _store_response(db, key, response)
         page.last_used_at = consultation.last_used_at = now
         db.commit()
         return response

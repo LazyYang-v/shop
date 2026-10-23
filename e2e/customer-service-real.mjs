@@ -3,6 +3,11 @@ import { chromium } from '@playwright/test'
 
 const origin = process.env.SHOP_BROWSER_TEST_ORIGIN
 assert.ok(/^http:\/\/127\.0\.0\.1:\d+$/.test(origin ?? ''))
+const email = process.env.SHOP_BROWSER_TEST_EMAIL
+const email2 = process.env.SHOP_BROWSER_TEST_EMAIL_2
+const password = process.env.SHOP_BROWSER_TEST_PASSWORD
+const orderId = process.env.SHOP_BROWSER_TEST_ORDER_ID
+assert.ok(email && email2 && password && /^[0-9a-f-]{36}$/.test(orderId ?? ''))
 const browser = await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' })
 try {
   for (const [label, viewport] of [['desktop', { width: 1440, height: 1000 }], ['mobile', { width: 390, height: 844 }]]) {
@@ -57,6 +62,70 @@ try {
     await other.close()
     await context.close()
   }
+  async function login(page, account) {
+    await page.goto(`${origin}/customer-service.html`)
+    await page.getByRole('button', { name: '登录', exact: true }).click()
+    await page.getByLabel('邮箱').fill(account)
+    await page.getByLabel('密码').fill(password)
+    await Promise.all([page.waitForNavigation(), page.locator('#login-submit').click()])
+    await page.waitForFunction(() => document.getElementById('account-status').textContent === '已登录买家')
+  }
+  async function logout(page) {
+    await Promise.all([page.waitForNavigation(), page.getByRole('button', { name: '退出', exact: true }).click()])
+    await page.waitForFunction(() => document.getElementById('account-status').textContent.includes('未登录'))
+  }
+  const ownerContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } })
+  const ownerPage = await ownerContext.newPage()
+  await login(ownerPage, email)
+  const ownerLog = ownerPage.getByRole('log')
+  let pending = ownerPage.waitForResponse(response => new URL(response.url()).pathname.endsWith('/messages'))
+  await ownerPage.getByRole('button', { name: '查询我的订单' }).click()
+  let response = await pending
+  assert.equal(response.status(), 200)
+  const listing = await response.json()
+  assert.equal(listing.status, 'ok')
+  assert.equal(listing.data.cards.length, 1)
+  assert.deepEqual(Object.keys(listing.data.cards[0].order).sort(), ['created_at', 'order_number', 'product_summary', 'status', 'total'])
+  assert.equal(listing.data.cards[0].order.order_number, orderId)
+  assert.equal(listing.data.cards[0].order.total, '129.00')
+  assert.equal(response.request().postDataJSON().text, '查询我的订单')
+  assert.equal('selected_order_id' in response.request().postDataJSON(), false)
+  await ownerPage.waitForFunction(id => document.querySelector('[role="log"]').textContent.includes(id), orderId)
+  pending = ownerPage.waitForResponse(item => new URL(item.url()).pathname.endsWith('/messages'))
+  await ownerPage.getByRole('button', { name: /查询订单 .* 的详情/ }).click()
+  response = await pending
+  assert.equal(response.status(), 200)
+  const detail = await response.json()
+  assert.equal(detail.data.cards[0].type, 'order_detail')
+  assert.equal(detail.data.cards[0].order.order_number, orderId)
+  assert.equal(detail.data.cards[0].order.tracking_number, 'DEMO-BROWSER-001')
+  assert.equal(response.request().postDataJSON().selected_order_id, orderId)
+  assert.equal('text' in response.request().postDataJSON(), false)
+  await ownerPage.waitForFunction(() => document.querySelector('[role="log"]').textContent.includes('DEMO-BROWSER-001'))
+  let text = await ownerLog.textContent()
+  assert.ok(text.includes('以上仅为商城已保存的物流信息，不包含实时轨迹或预计送达时间。'))
+  for (const forbidden of ['PRIVATE_PHONE_SENTINEL', 'PRIVATE_ADDRESS_SENTINEL', '13800138000', '文三路']) {
+    assert.ok(!text.includes(forbidden))
+  }
+  await logout(ownerPage)
+  pending = ownerPage.waitForResponse(item => new URL(item.url()).pathname.endsWith('/messages'))
+  await ownerPage.getByRole('button', { name: '查询我的订单' }).click()
+  response = await pending
+  assert.equal(response.status(), 401)
+  await ownerPage.getByRole('dialog', { name: '登录后查看本人订单' }).waitFor()
+  await ownerPage.waitForFunction(() => document.querySelector('[role="log"]').textContent.includes('请登录后查看本人订单。'))
+  await login(ownerPage, email2)
+  pending = ownerPage.waitForResponse(item => new URL(item.url()).pathname.endsWith('/messages'))
+  await ownerPage.getByRole('button', { name: '查询我的订单' }).click()
+  response = await pending
+  assert.equal(response.status(), 200)
+  const empty = await response.json()
+  assert.equal(empty.status, 'empty')
+  assert.equal(empty.data.reply, '未找到可访问订单')
+  assert.deepEqual(empty.data.cards, [])
+  text = await ownerPage.getByRole('log').textContent()
+  assert.ok(!text.includes(orderId))
+  await ownerContext.close()
   console.log('Chrome desktop/mobile anonymous sentences -> messages -> local MCP -> real fixture DB -> synthetic exchange + real ledger passed; unknown private text clarifies, cross-session pages denied. Real provider calls=0, money=0.')
 } finally {
   await browser.close()

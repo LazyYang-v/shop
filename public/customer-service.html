@@ -13,11 +13,23 @@
     button { cursor: pointer; }
     button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid #ed853e; outline-offset: 4px; }
     .page { min-height: 100dvh; display: grid; place-items: center; padding: 40px; background: radial-gradient(ellipse at 20% 15%, #f9f7f4, transparent 65%), #e7e5e1; }
-    .chat { width: min(1300px, 100%); height: min(950px, calc(100dvh - 80px)); min-height: 580px; display: flex; flex-direction: column; overflow: hidden; background: linear-gradient(180deg, #f7f7f6 0%, #f8f7f4 62%, #fff6e7 84%, #ffdfb9 100%); box-shadow: 0 18px 70px #29221b12; }
+    .chat { position: relative; width: min(1300px, 100%); height: min(950px, calc(100dvh - 80px)); min-height: 580px; display: flex; flex-direction: column; overflow: hidden; background: linear-gradient(180deg, #f7f7f6 0%, #f8f7f4 62%, #fff6e7 84%, #ffdfb9 100%); box-shadow: 0 18px 70px #29221b12; }
     .heading { display: flex; align-items: center; gap: 19px; flex-shrink: 0; padding: 20px 26px; }
     .back { display: flex; color: inherit; text-decoration: none; }
     .heading h1 { margin: 0; font-size: 27px; font-weight: 600; }
     .heading .feedback { margin-left: auto; display: grid; justify-items: center; gap: 1px; border: 0; background: none; color: inherit; font-size: 10px; font-weight: 600; }
+    .account-bar { display: flex; align-items: center; gap: 12px; padding: 0 26px 12px; font-size: 14px; color: #6b7077; }
+    .account-bar button { padding: 5px 13px; border: 1px solid #f1d0ae; border-radius: 6px; background: #fff; color: #b85f22; }
+    .login-panel { position: absolute; z-index: 4; inset: 0; display: grid; place-items: center; padding: 24px; background: #29221b66; }
+    .login-panel[hidden] { display: none; }
+    .login-panel form { width: min(420px, 100%); display: grid; gap: 14px; padding: 26px; border-radius: 10px; background: #fff; box-shadow: 0 18px 60px #29221b40; }
+    .login-panel h2 { margin: 0 0 4px; font-size: 21px; }
+    .login-panel label { display: grid; gap: 6px; font-size: 14px; color: #6b7077; }
+    .login-panel input { height: 44px; padding: 0 12px; border: 1px solid #d8d5d0; border-radius: 7px; font-size: 16px; }
+    .login-panel .login-actions { display: flex; gap: 10px; justify-content: flex-end; }
+    .login-panel .login-actions button { padding: 8px 18px; border: 0; border-radius: 7px; background: #fa914f; color: #fff; }
+    .login-panel .login-actions button.secondary { background: #ece9e4; color: #333; }
+    .login-error { min-height: 20px; margin: 0; color: #b3261e; font-size: 14px; }
     svg { display: block; width: 29px; height: 29px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
     .messages { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #dededb transparent; padding: 15px 20px 28px; }
     .history { display: block; margin: 5px auto 24px; padding: 4px 8px; border: 0; background: none; color: #389bcf; font-size: 18px; }
@@ -53,6 +65,8 @@
       .chat { width: 100%; height: 100dvh; min-height: 0; box-shadow: none; }
       .heading { padding: 17px 16px; gap: 13px; }
       .heading h1 { font-size: 23px; }
+      .account-bar { padding: 0 16px 10px; font-size: 13px; gap: 8px; }
+      .login-panel { padding: 14px; }
       .messages { padding: 12px 12px 20px; }
       .history { font-size: 14px; margin-bottom: 24px; }
       .avatar { width: 38px; height: 40px; font-size: 28px; }
@@ -88,13 +102,31 @@
         <h1>淘小蜜</h1>
         <button class="feedback" type="button" aria-label="反馈"><svg><use href="#feedback"/></svg><span>反馈</span></button>
       </header>
+      <div class="account-bar">
+        <span id="account-status">未登录 · 登录后可查询本人订单</span>
+        <button id="login-button" type="button">登录</button>
+        <button id="logout-button" type="button" hidden>退出</button>
+      </div>
+      <div class="login-panel" id="login-panel" role="dialog" aria-modal="true" aria-labelledby="login-title" hidden>
+        <form id="login-form">
+          <h2 id="login-title">登录后查看本人订单</h2>
+          <label>邮箱<input id="login-email" type="email" autocomplete="username" required maxlength="320"></label>
+          <label>密码<input id="login-password" type="password" autocomplete="current-password" required minlength="12" maxlength="128"></label>
+          <p class="login-error" id="login-error" role="alert"></p>
+          <div class="login-actions">
+            <button class="secondary" id="login-cancel" type="button">取消</button>
+            <button id="login-submit" type="submit">登录</button>
+          </div>
+        </form>
+      </div>
       <div class="messages" id="messages" role="log" aria-label="客服聊天记录" aria-live="polite">
         <button class="history" type="button">点击查看历史咨询记录</button>
         <div class="message"><span class="avatar" aria-hidden="true">👩🏻‍💼</span><div class="bubble">亲，我是智能小蜜，很高兴为您服务！</div></div>
-        <div class="message"><span class="avatar" aria-hidden="true">👩🏻‍💼</span><div class="bubble">访客可匿名查询虚构演示商品。请点击“查看演示商品”，或开始商品咨询后选择商品查询价格和库存。匿名会话自建立起30分钟有效。可问“有哪些商品？”或完整商品名称加“多少钱”“有货吗”“价格和库存”；也可咨询标注为“虚构演示政策（非真实商城政策）”的合成规则，例如“演示商城多久发货？”。其他问题会请您澄清。</div></div>
+        <div class="message"><span class="avatar" aria-hidden="true">👩🏻‍💼</span><div class="bubble">访客可匿名查询虚构演示商品。登录买家可查询本人订单及商城已保存的物流信息；即使只有一单，也需要您亲自选择。匿名会话自建立起30分钟有效。可问“有哪些商品？”或完整商品名称加“多少钱”“有货吗”“价格和库存”；也可咨询标注为“虚构演示政策（非真实商城政策）”的合成规则，例如“演示商城多久发货？”。退款、发券、催发货、转人工和实时轨迹暂不支持。</div></div>
         <div class="quick-questions" aria-label="热门咨询">
           <button class="quick-question" id="start-consultation" type="button">开始商品咨询<span class="chevron" aria-hidden="true"></span></button>
           <button class="quick-question" id="list-products" type="button">查看演示商品<span class="chevron" aria-hidden="true"></span></button>
+          <button class="quick-question" id="query-orders" type="button">查询我的订单<span class="chevron" aria-hidden="true"></span></button>
         </div>
       </div>
       <div class="composer">
@@ -169,6 +201,97 @@
       saveHandoff(null);
       messages.querySelectorAll('[data-consultation-action]').forEach(button => { button.disabled = true; });
     }
+    const accountStatus = document.getElementById('account-status');
+    const loginButton = document.getElementById('login-button');
+    const logoutButton = document.getElementById('logout-button');
+    const loginPanel = document.getElementById('login-panel');
+    const loginError = document.getElementById('login-error');
+    let accountBusy = false;
+    function showLogin(message = '') {
+      loginError.textContent = message;
+      loginPanel.hidden = false;
+      document.getElementById('login-email').focus();
+    }
+    function hideLogin() {
+      loginPanel.hidden = true;
+      loginError.textContent = '';
+      document.getElementById('login-password').value = '';
+    }
+    async function accountPost(path, payload) {
+      return withSessionLane(async () => {
+        const csrfResponse = await fetch('/api/auth/csrf', { credentials: 'same-origin', cache: 'no-store' });
+        if (!csrfResponse.ok) throw new Error('Authentication unavailable');
+        const csrf = await csrfResponse.json();
+        return fetch(path, {
+          method: 'POST', credentials: 'same-origin', cache: 'no-store',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf.csrf_token },
+          body: JSON.stringify(payload), signal: AbortSignal.timeout(10000),
+        });
+      });
+    }
+    async function refreshAccount() {
+      try {
+        const response = await fetch('/api/auth/me', { credentials: 'same-origin', cache: 'no-store' });
+        if (response.ok) {
+          const user = await response.json();
+          if (typeof user?.id !== 'string' || !['buyer', 'admin'].includes(user.role)) throw new Error('Invalid account');
+          accountStatus.textContent = user.role === 'buyer' ? '已登录买家' : '已登录账号';
+          loginButton.hidden = true;
+          logoutButton.hidden = false;
+          return true;
+        }
+      } catch { /* Keep the signed-out default; the server still enforces identity. */ }
+      accountStatus.textContent = '未登录 · 登录后可查询本人订单';
+      loginButton.hidden = false;
+      logoutButton.hidden = true;
+      return false;
+    }
+    loginButton.addEventListener('click', () => showLogin());
+    document.getElementById('login-cancel').addEventListener('click', hideLogin);
+    document.getElementById('login-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      if (accountBusy) return;
+      accountBusy = true;
+      const submit = document.getElementById('login-submit');
+      submit.disabled = true;
+      loginError.textContent = '';
+      try {
+        const response = await accountPost('/api/auth/login', {
+          email: document.getElementById('login-email').value.trim(),
+          password: document.getElementById('login-password').value,
+        });
+        if (!response.ok) {
+          loginError.textContent = response.status === 401 ? '登录失败，请检查邮箱和密码。' : '登录暂不可用，请稍后重试。';
+          return;
+        }
+        invalidateConsultation();
+        window.location.reload();
+      } catch {
+        loginError.textContent = '登录暂不可用，请稍后重试。';
+      } finally {
+        accountBusy = false;
+        submit.disabled = false;
+      }
+    });
+    logoutButton.addEventListener('click', async () => {
+      if (accountBusy) return;
+      accountBusy = true;
+      logoutButton.disabled = true;
+      try {
+        const response = await accountPost('/api/auth/logout', {});
+        if (response.ok) {
+          invalidateConsultation();
+          window.location.reload();
+          return;
+        }
+        appendMessage('退出未能确认，请稍后重试。');
+      } catch {
+        appendMessage('退出未能确认，请稍后重试。');
+      } finally {
+        accountBusy = false;
+        logoutButton.disabled = false;
+      }
+    });
     function scheduleRenewal() {
       clearTimeout(renewalTimer);
       if (!consultation) return;
@@ -215,20 +338,37 @@
       });
       const result = await response.json();
       if (!response.ok) {
+        const orderRequest = Boolean(payload.selected_order_id) || /订单/.test(payload.text || '');
         if ([401, 403, 409, 410].includes(response.status)) invalidateConsultation();
-        const dependencyMessage = { model_unavailable: '模型服务暂不可用，请稍后重试。',
-          mcp_timeout: '商品查询超时，请稍后重试。', mcp_unavailable: '商品查询服务暂不可用，请稍后重试。',
-          policy_unavailable: '政策和检索服务暂不可用。', resource_unavailable: '未找到可访问的记录。', invalid_input: '请求参数无效。' }[result.code];
+        if (result.code === 'authentication_required') {
+          appendMessage('请登录后查看本人订单。');
+          showLogin();
+          return null;
+        }
+        const dependencyMessage = orderRequest
+          ? { mcp_timeout: '订单查询超时，请稍后重试。', mcp_unavailable: '订单查询服务暂不可用，请稍后重试。',
+              resource_unavailable: '未找到可访问订单。', invalid_input: '请求参数无效。' }[result.code]
+          : { model_unavailable: '模型服务暂不可用，请稍后重试。',
+              mcp_timeout: '商品查询超时，请稍后重试。', mcp_unavailable: '商品查询服务暂不可用，请稍后重试。',
+              policy_unavailable: '政策和检索服务暂不可用。', resource_unavailable: '未找到可访问的记录。',
+              invalid_input: '请求参数无效。' }[result.code];
         appendMessage(dependencyMessage || (response.status === 410 ? '咨询页面已过期，请重新开始商品咨询。'
           : response.status === 401 ? '会话已失效，请重新开始商品咨询。'
           : response.status === 409 ? '咨询状态已变化，请重新开始。'
           : response.status === 429 ? '咨询过于频繁，请稍后重试。'
-          : '商品咨询暂不可用，请稍后重试。'));
+          : orderRequest ? '订单查询暂不可用，请稍后重试。' : '商品咨询暂不可用，请稍后重试。'));
         return null;
       }
       return result;
     }
     async function consultProducts(text = '查看演示商品') {
+      return runConsultation({ text });
+    }
+    async function selectOrder(orderNumber) {
+      appendMessage(`查询订单 ${orderNumber}`, true);
+      return runConsultation({ selected_order_id: orderNumber });
+    }
+    async function runConsultation(messageFields) {
       if (consultationBusy) return;
       consultationBusy = true;
       try {
@@ -243,7 +383,7 @@
         const result = await consultationPost('messages', {
           page_instance_id: consultation.page_instance_id,
           consultation_id: consultation.consultation_id,
-          client_message_id: crypto.randomUUID(), text,
+          client_message_id: crypto.randomUUID(), ...messageFields,
         });
         if (!result) return;
         if (!result.data || typeof result.data.reply !== 'string' || !Array.isArray(result.data.cards)) throw new Error('Invalid consultation');
@@ -270,6 +410,15 @@
             messages.append(button);
             continue;
           }
+          if (card.type === 'order' && validOrderCandidate(card.order)) {
+            appendMessage(orderCandidateFacts(card.order));
+            appendOrderSelection(card.order.order_number);
+            continue;
+          }
+          if (card.type === 'order_detail' && validOrderDetail(card.order)) {
+            appendMessage(orderDetailFacts(card.order));
+            continue;
+          }
           if (card.type !== 'product' || !validProduct(card.product)) continue;
           appendMessage(productFacts(card.product));
           if (card.selection_text !== `查看演示商品：${card.product.id}`) continue;
@@ -287,8 +436,67 @@
         consultationBusy = false;
       }
     }
+    function appendOrderSelection(orderNumber) {
+      const button = document.createElement('button');
+      button.className = 'quick-question';
+      button.type = 'button';
+      button.dataset.consultationAction = 'true';
+      button.textContent = `查询订单 ${orderNumber.slice(0, 8)}… 的详情`;
+      button.addEventListener('click', () => selectOrder(orderNumber));
+      messages.append(button);
+    }
     document.getElementById('start-consultation').addEventListener('click', () => consultProducts());
+    document.getElementById('query-orders').addEventListener('click', () => consultProducts('查询我的订单'));
     let queryingProducts = false;
+    const ORDER_STATUS_LABELS = { pending_payment: '待付款', pending_shipment: '待发货',
+      pending_receipt: '待收货', completed: '已完成', closed: '已关闭' };
+    const CLOSE_REASON_LABELS = { buyer_cancelled: '买家取消', payment_timeout: '支付超时' };
+    const ORDER_NUMBER_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    function validTimestamp(value) {
+      return typeof value === 'string' && Number.isFinite(Date.parse(value));
+    }
+    function validOrderCandidate(order) {
+      return order && typeof order === 'object' && !Array.isArray(order)
+        && Object.keys(order).sort().join(',') === 'created_at,order_number,product_summary,status,total'
+        && ORDER_NUMBER_PATTERN.test(order.order_number)
+        && validTimestamp(order.created_at)
+        && typeof order.product_summary === 'string' && order.product_summary.length <= 300
+        && typeof order.total === 'string' && /^\d+\.\d{2}$/.test(order.total)
+        && typeof order.status === 'string' && Object.hasOwn(ORDER_STATUS_LABELS, order.status);
+    }
+    function validOrderDetail(order) {
+      return order && typeof order === 'object' && !Array.isArray(order)
+        && Object.keys(order).sort().join(',') === 'close_reason,created_at,expires_at,items,order_number,product_summary,shipped_at,shipping_company,status,total,tracking_number'
+        && ORDER_NUMBER_PATTERN.test(order.order_number)
+        && validTimestamp(order.created_at) && validTimestamp(order.expires_at)
+        && (order.shipped_at === null || validTimestamp(order.shipped_at))
+        && typeof order.total === 'string' && /^\d+\.\d{2}$/.test(order.total)
+        && typeof order.product_summary === 'string' && order.product_summary.length <= 300
+        && typeof order.status === 'string' && Object.hasOwn(ORDER_STATUS_LABELS, order.status)
+        && (order.close_reason === null || Object.hasOwn(CLOSE_REASON_LABELS, order.close_reason))
+        && Array.isArray(order.items) && order.items.length >= 1 && order.items.length <= 20
+        && order.items.every(item => item && Object.keys(item).sort().join(',') === 'name,quantity'
+          && typeof item.name === 'string' && item.name.length >= 1 && item.name.length <= 160
+          && Number.isInteger(item.quantity) && item.quantity >= 1 && item.quantity <= 999)
+        && [order.shipping_company, order.tracking_number].every(value => value === null
+          || (typeof value === 'string' && value.length >= 1 && value.length <= 100));
+    }
+    function orderCandidateFacts(order) {
+      return `订单号：${order.order_number}\n创建时间：${order.created_at}\n商品：${order.product_summary}`
+        + `\n金额：¥${order.total}\n状态：${ORDER_STATUS_LABELS[order.status]}`;
+    }
+    function orderDetailFacts(order) {
+      const logistics = order.shipping_company || order.tracking_number
+        ? `物流公司：${order.shipping_company || '未保存'}\n运单号：${order.tracking_number || '未保存'}`
+          + `\n发货时间：${order.shipped_at || '未保存'}`
+        : '物流公司：暂无已保存物流信息';
+      return `订单号：${order.order_number}\n创建时间：${order.created_at}\n状态：${ORDER_STATUS_LABELS[order.status]}`
+        + `\n金额：¥${order.total}\n商品：${order.product_summary}`
+        + `\n明细：${order.items.map(item => `${item.name} ×${item.quantity}`).join('、')}`
+        + `\n支付截止：${order.expires_at}`
+        + `\n关闭原因：${order.close_reason ? CLOSE_REASON_LABELS[order.close_reason] : '无'}`
+        + `\n${logistics}\n以上仅为商城已保存的物流信息，不包含实时轨迹或预计送达时间。`;
+    }
     function productFacts(product) {
       return `${product.name}\n分类：${product.category}\n价格：¥${product.price}\n可售库存：${product.stock}\n状态：${product.is_listed ? '上架' : '下架'}`;
     }
@@ -399,6 +607,7 @@
       sendButton.disabled = false;
       input.focus();
     }));
+    refreshAccount();
   </script>
 </body>
 </html>

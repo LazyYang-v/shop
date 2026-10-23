@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import time
 import logging
 import os
@@ -20,10 +19,11 @@ from shop_api.addresses import AddressInput, AddressListResponse, AddressPatch, 
 from shop_api.catalog import CatalogQuery, Product, ProductListResponse, list_categories, list_products
 from shop_api.cart import AddCartItem, CartItem, CartResponse, UpdateCartItem, add_item, read_cart, update_item
 from shop_api.database import make_session_factory
-from shop_api.customer_service import CustomerServiceUnavailable, SafeLogWriter, SharedLimiter, acquire_query_turn, check_fixture, cleanup_rate_limits
+from shop_api.customer_service import CustomerServiceUnavailable, SafeLogWriter, SharedLimiter, acquire_query_turn, check_fixture
+from shop_api.customer_service_maintenance import CustomerServiceMaintenance
+from shop_api.customer_service_admission import require_demo_buyer, require_query_rate_limits
 from shop_api.customer_service_products import ProductTools
-from shop_api.customer_service_model_budget import ModelBudget
-from shop_api.customer_service_consultations import build_consultation_router, cleanup_consultations
+from shop_api.customer_service_consultations import build_consultation_router
 from shop_api.expiry import expire_orders, expiry_loop
 from shop_api.orders import CheckoutInput, Order, OrderListResponse, OrderResponse, ShipmentInput, cancel_order, confirm_receipt, create_order, get_order, list_orders, read_order, ship_order, simulate_payment
 from shop_api.admin_catalog import build_admin_catalog_router
@@ -97,22 +97,10 @@ def create_app(database_url: str | None = None) -> FastAPI:
     app.state.customer_service_buyer_ids = set()
 
     async def customer_service_maintenance(application: FastAPI) -> None:
-        next_daily_cleanup = time.monotonic()
-        next_hourly_cleanup = time.monotonic() + 3600
-        while application.state.customer_service_enabled:
-            await asyncio.sleep(30)
-            try:
-                await asyncio.to_thread(cleanup_consultations, factory, application.state.clock())
-                await asyncio.to_thread(ModelBudget(factory).reap_expired)
-                if time.monotonic() >= next_daily_cleanup:
-                    await asyncio.to_thread(ModelBudget(factory).prune_ended)
-                    next_daily_cleanup = time.monotonic() + 86400
-                if time.monotonic() >= next_hourly_cleanup:
-                    await asyncio.to_thread(application.state.customer_service_log_writer.prune, application.state.clock())
-                    await asyncio.to_thread(cleanup_rate_limits, factory, application.state.clock())
-                    next_hourly_cleanup = time.monotonic() + 3600
-            except Exception as error:
-                logging.getLogger(__name__).warning("customer_service_maintenance_failed error=%s", type(error).__name__)
+        maintenance = CustomerServiceMaintenance(
+            factory, application.state.customer_service_log_writer, lambda: application.state.clock())
+        if application.state.customer_service_enabled:
+            await maintenance.run()
 
     def initialize_customer_service_guards(application: FastAPI, session: Session) -> None:
         fixture_path = os.getenv("SHOP_CUSTOMER_SERVICE_FIXTURE_PATH")
@@ -133,6 +121,8 @@ def create_app(database_url: str | None = None) -> FastAPI:
             fixtures = check_fixture(session, fixture_path, fixture_digest)
             writer = SafeLogWriter(log_directory)
             writer.verify()
+            # Expired files from downtime are removed before admission is enabled.
+            writer.prune(application.state.clock())
             application.state.customer_service_fixtures = fixtures
             application.state.customer_service_buyer_ids = buyer_ids
             application.state.customer_service_log_writer = writer
@@ -201,21 +191,6 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     customer_service_router = APIRouter(prefix="/api/customer-service", route_class=CustomerServiceRoute)
 
-    def require_customer_service_rate_limits(request: Request) -> None:
-        if request.client is None:
-            raise HTTPException(status_code=503, detail="客服查询保护暂不可用")
-        keys = (
-            (f"session:{hashlib.sha256(request.cookies.get('shop_session', '').encode()).hexdigest()}", 20),
-            (f"ip:{hashlib.sha256(request.client.host.encode()).hexdigest()}", 60),
-        )
-        try:
-            for key, limit in keys:
-                allowed, retry_after = app.state.customer_service_limiter.allow(key, limit, 60, app.state.clock())
-                if not allowed:
-                    raise HTTPException(status_code=429, detail="查询过于频繁", headers={"Retry-After": str(retry_after)})
-        except CustomerServiceUnavailable:
-            raise HTTPException(status_code=503, detail="客服查询保护暂不可用") from None
-
     @customer_service_router.get("/products")
     def customer_service_products(
         request: Request,
@@ -229,18 +204,14 @@ def create_app(database_url: str | None = None) -> FastAPI:
         session: Session = Depends(session_dependency),
     ) -> dict[str, object]:
         response.headers["Cache-Control"] = "no-store"
-        if not app.state.customer_service_enabled:
-            raise HTTPException(status_code=503, detail="客服商品查询暂不可用")
-        buyer = require_role(buyer_session, record, Role.BUYER)
-        if buyer.id not in app.state.customer_service_buyer_ids:
-            raise HTTPException(status_code=403, detail="无权访问客服商品查询")
+        require_demo_buyer(request, record, buyer_session)
         if set(request.query_params) - {"q", "category", "page", "page_size"}:
             raise HTTPException(status_code=422, detail="查询参数无效")
         request_id = request.state.customer_service_request_id
         started = time.monotonic()
         if not acquire_query_turn(session, record.id):
             raise HTTPException(status_code=425, detail="已有查询正在处理")
-        require_customer_service_rate_limits(request)
+        require_query_rate_limits(request)
         try:
             result = ProductTools(session, app.state.customer_service_fixtures, request_id, app.state.clock).call(
                 "list_products", {"keyword": q, "category": category, "page": page, "page_size": page_size},
@@ -262,18 +233,14 @@ def create_app(database_url: str | None = None) -> FastAPI:
         session: Session = Depends(session_dependency),
     ) -> dict[str, object]:
         response.headers["Cache-Control"] = "no-store"
-        if not app.state.customer_service_enabled:
-            raise HTTPException(status_code=503, detail="客服商品查询暂不可用")
-        buyer = require_role(buyer_session, record, Role.BUYER)
-        if buyer.id not in app.state.customer_service_buyer_ids:
-            raise HTTPException(status_code=403, detail="无权访问客服商品查询")
+        require_demo_buyer(request, record, buyer_session)
         if request.query_params:
             raise HTTPException(status_code=422, detail="查询参数无效")
         request_id = request.state.customer_service_request_id
         started = time.monotonic()
         if not acquire_query_turn(session, record.id):
             raise HTTPException(status_code=425, detail="已有查询正在处理")
-        require_customer_service_rate_limits(request)
+        require_query_rate_limits(request)
         try:
             result = ProductTools(session, app.state.customer_service_fixtures, request_id, app.state.clock).call(
                 "get_product", {"product_id": str(product_id)},

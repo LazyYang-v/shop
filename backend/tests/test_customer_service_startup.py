@@ -43,10 +43,16 @@ def test_customer_service_startup_enables_only_with_verified_fixture_and_private
     monkeypatch.setenv("SHOP_CUSTOMER_SERVICE_LOG_DIRECTORY", log_directory)
     monkeypatch.setenv("SHOP_CUSTOMER_SERVICE_BUYER_IDS", buyer_ids)
 
+    from datetime import timedelta
+    from pathlib import Path
     app = create_app(database_url=client.app.state.session_factory.kw["bind"].url.render_as_string(hide_password=False))
+    expired = Path(log_directory) / ("customer-service-" + (app.state.clock() - timedelta(days=8)).strftime("%Y-%m-%d") + ".jsonl")
+    expired.write_text("{}\n")
 
     async def check_lifespan():
         async with app.router.lifespan_context(app):
+            # Startup prunes before admission, without waiting for a scheduled task.
+            assert not expired.exists()
             assert app.state.customer_service_enabled is True
             assert set(app.state.customer_service_fixtures) == {"00000000-0000-0000-0000-000000000001"}
 

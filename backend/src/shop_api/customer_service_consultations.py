@@ -12,14 +12,15 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import DateTime, ForeignKey, LargeBinary, Uuid, delete, select, text
+from sqlalchemy import DateTime, ForeignKey, LargeBinary, Uuid, delete, select, text, update
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from shop_api.customer_service import CustomerServiceUnavailable, QueryDeadline, acquire_query_turn
 from shop_api.customer_service_products import ProductTools
 from shop_api.database import Base
-from shop_api.identity import AuthSession, Role, require_csrf, require_role
+from shop_api.identity import AuthSession, require_csrf
+from shop_api.customer_service_admission import require_demo_buyer, require_query_rate_limits
 
 LIST_PRODUCTS_TEXT = "查看演示商品"
 PRODUCT_SELECTION_PREFIX = "查看演示商品："
@@ -43,7 +44,7 @@ class ConsultationPage(Base):
     session_id: Mapped[UUID] = mapped_column(ForeignKey("auth_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
     consultation_id: Mapped[UUID] = mapped_column(ForeignKey("customer_service_consultations.id", ondelete="CASCADE"), nullable=False)
     last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    handoff_hash: Mapped[bytes] = mapped_column(LargeBinary(32), nullable=False, unique=True)
+    handoff_hash: Mapped[bytes | None] = mapped_column(LargeBinary(32), nullable=True, unique=True)
     handoff_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -167,11 +168,7 @@ def build_consultation_router(session_dependency, current_session):
             require_csrf(request, record, csrf_token, origin)
         except HTTPException:
             raise ConsultationError(403, "forbidden", "请求校验失败") from None
-        if not request.app.state.customer_service_enabled:
-            raise CustomerServiceUnavailable
-        user = require_role(db, record, Role.BUYER)
-        if user.id not in request.app.state.customer_service_buyer_ids:
-            raise ConsultationError(403, "resource_unavailable", "未找到可访问的记录")
+        require_demo_buyer(request, record, db)
         if request.query_params:
             raise ConsultationError(422, "invalid_input", "请求参数无效")
         return record
@@ -186,7 +183,7 @@ def build_consultation_router(session_dependency, current_session):
         consultation = None
         if payload.handoff_token:
             token_hash = hashlib.sha256(payload.handoff_token.encode()).digest()
-            predecessor = next((page for page in pages if secrets.compare_digest(page.handoff_hash, token_hash)), None)
+            predecessor = next((page for page in pages if page.handoff_hash is not None and secrets.compare_digest(page.handoff_hash, token_hash)), None)
             if predecessor is not None and predecessor.handoff_expires_at > now and predecessor.last_used_at + timedelta(minutes=10) > now:
                 candidate = db.get(Consultation, predecessor.consultation_id)
                 if candidate is not None and not _consultation_expired(candidate, now):
@@ -221,7 +218,7 @@ def build_consultation_router(session_dependency, current_session):
         now = request.app.state.clock()
         _lock_session(db, record, now)
         page, _ = _page(db, record, payload.page_instance_id, now)
-        if page.handoff_expires_at <= now or not secrets.compare_digest(page.handoff_hash, hashlib.sha256(payload.handoff_token.encode()).digest()):
+        if page.handoff_hash is None or page.handoff_expires_at <= now or not secrets.compare_digest(page.handoff_hash, hashlib.sha256(payload.handoff_token.encode()).digest()):
             raise ConsultationError(410, "page_expired", "页面已过期，请重新打开")
         _rate(request, f"renew:{page.id}", 4)
         page.last_used_at = now
@@ -263,10 +260,7 @@ def build_consultation_router(session_dependency, current_session):
             if not payload.text.startswith(PRODUCT_SELECTION_PREFIX) or product_id not in request.app.state.customer_service_fixtures:
                 raise ConsultationError(422, "invalid_input", "请选择受支持的商品查询")
             name, args = "get_product", {"product_id": product_id}
-        if request.client is None:
-            raise CustomerServiceUnavailable
-        _rate(request, f"session:{hashlib.sha256(request.cookies.get('shop_session', '').encode()).hexdigest()}", 20)
-        _rate(request, f"ip:{hashlib.sha256(request.client.host.encode()).hexdigest()}", 60)
+        require_query_rate_limits(request)
         result = ProductTools(db, request.app.state.customer_service_fixtures,
                               request.state.customer_service_request_id, request.app.state.clock).call(name, args)
         products = result["data"]["items"] if name == "list_products" else [result["data"]]
@@ -294,6 +288,11 @@ def cleanup_consultations(session_factory, now: datetime) -> None:
         records = db.scalars(select(AuthSession).where(AuthSession.id.in_(select(Consultation.session_id)))
                              .with_for_update(skip_locked=True)).all()
         for record in records:
+            db.execute(update(ConsultationPage).where(
+                ConsultationPage.session_id == record.id,
+                ConsultationPage.handoff_expires_at <= now,
+                ConsultationPage.handoff_hash.is_not(None),
+            ).values(handoff_hash=None))
             db.execute(delete(Consultation).where(Consultation.session_id == record.id,
                        (Consultation.last_used_at <= now - timedelta(minutes=30)) |
                        (Consultation.created_at <= now - timedelta(hours=24))))

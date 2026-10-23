@@ -191,6 +191,58 @@ def test_disabled_and_invalid_identity_fail_closed(consultation_client):
     assert_error(client.post(PREFIX + "/pages", json={}), 401, "authentication_required")
 
 
+def test_cleanup_erases_expired_handoff_without_revoking_active_page(consultation_client):
+    from shop_api.customer_service_consultations import cleanup_consultations
+
+    client = consultation_client
+    now = client.app.state.clock()
+    client.app.state.clock = lambda: now
+    created = page(client)
+    now += timedelta(seconds=90)
+    cleanup_consultations(client.app.state.session_factory, now)
+    with client.app.state.session_factory() as db:
+        persisted = db.get(ConsultationPage, UUID(created["page_instance_id"]))
+        assert persisted is not None
+        assert persisted.handoff_hash is None
+    # A second cleanup remains safe, and the original page can still query.
+    cleanup_consultations(client.app.state.session_factory, now)
+    assert client.post(PREFIX + "/messages", json=message_payload(created)).status_code == 200
+    assert_error(client.post(PREFIX + "/pages/renew", json={
+        "page_instance_id": created["page_instance_id"], "handoff_token": created["handoff_token"]}), 410, "page_expired")
+    successor = page(client, handoff_token=created["handoff_token"])
+    assert successor["consultation_id"] != created["consultation_id"]
+
+
+def test_cleanup_preserves_renewed_handoff_until_its_new_deadline(consultation_client):
+    from shop_api.customer_service_consultations import cleanup_consultations
+
+    client = consultation_client
+    now = client.app.state.clock()
+    client.app.state.clock = lambda: now
+    created = page(client)
+    now += timedelta(seconds=30)
+    assert client.post(PREFIX + "/pages/renew", json={
+        "page_instance_id": created["page_instance_id"], "handoff_token": created["handoff_token"]}).status_code == 200
+    now += timedelta(seconds=60)
+    cleanup_consultations(client.app.state.session_factory, now)
+    successor = page(client, handoff_token=created["handoff_token"])
+    assert successor["consultation_id"] == created["consultation_id"]
+
+
+def test_get_and_messages_share_session_quota_after_page_validation(consultation_client):
+    client = consultation_client
+    now = client.app.state.clock()
+    client.app.state.clock = lambda: now
+    created = page(client)
+    for _ in range(5):
+        assert_error(client.post(PREFIX + "/messages", json=message_payload(created, page_instance_id=str(uuid4()))), 410, "page_expired")
+    for _ in range(10):
+        assert client.get(PREFIX + "/products").status_code == 200
+        assert client.post(PREFIX + "/messages", json=message_payload(created)).status_code == 200
+    assert_error(client.get(PREFIX + "/products/" + PRODUCT_ID), 429, "rate_limited")
+    assert_error(client.post(PREFIX + "/messages", json=message_payload(created)), 429, "rate_limited")
+
+
 def test_cleanup_removes_expired_dedupe_and_pages(consultation_client):
     from shop_api.customer_service_consultations import cleanup_consultations
 

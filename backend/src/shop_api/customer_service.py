@@ -152,6 +152,7 @@ class SafeLogWriter:
     def prune(self, now: datetime) -> int:
         cutoff = now.astimezone(UTC).timestamp() - 7 * 24 * 60 * 60
         deleted = 0
+        failed = False
         self.verify()
         for entry in self._directory.iterdir():
             if entry.is_symlink() or not entry.is_file() or not re.fullmatch(r"customer-service-\d{4}-\d{2}-\d{2}\.jsonl", entry.name):
@@ -164,7 +165,10 @@ class SafeLogWriter:
                     entry.unlink()
                     deleted += 1
             except (OSError, ValueError) as error:
+                failed = True
                 _LOGGER.warning("customer_service_log_prune_failed error=%s", type(error).__name__)
+        if failed:
+            raise CustomerServiceUnavailable
         return deleted
 
 

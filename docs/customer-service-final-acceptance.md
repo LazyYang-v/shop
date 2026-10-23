@@ -88,8 +88,24 @@
 | 当前分支 API/真实 PostgreSQL 回归 | 待运行 | 两个数据库 URL 都必须指向 `127.0.0.1:55445/shop_test`，只在测试进程启用既有清理授权 |
 | 当前分支桌面与移动真实 Chrome | 待运行 | 不以桌面流程外加移动截图替代移动交互；记录具体组合流程和结果 |
 | 当前分支 Playwright 页面模拟套件 | 待运行 | 与真实 API 证据分开，不证明事务或外部依赖 |
-| 构建、类型及差异检查 | 待运行 | 历史类型诊断不提前记为本轮结果 |
+| 全后端类型检查基线 | 未通过：18 项既有诊断 | 在 #9 实现合入前运行 `uv run --project backend ty check backend/src/shop_api`；分布为 cancel 7、model_budget 3、model_transport 5、spend_guard 1、reconcile_demo_catalog 2；最终检查需区分新增诊断 |
+| 构建、变更模块类型及差异检查 | 待运行 | 不把基线失败写成全项目类型检查通过 |
 | 两轴代码审查 | 待运行 | Standards 与 Spec 分开报告，修复后补最终结果 |
+
+## 本地重复验收入口
+
+先确认测试容器实际目标为 loopback 的独立 `shop_test`、无其他并行数据库测试。只在当前终端设置两个数据库地址，应用导入所用 `SHOP_DATABASE_URL` 必须与 `SHOP_TEST_DATABASE_URL` 相同；密码从受控本地环境取得，不打印或提交：
+
+```sh
+export SHOP_TEST_DATABASE_URL='postgresql+psycopg://shop:<测试专用密码>@127.0.0.1:55445/shop_test'
+SHOP_DATABASE_URL="$SHOP_TEST_DATABASE_URL" \
+  SHOP_ALLOW_TEST_DATABASE_RESET=1 SHOP_RUN_BROWSER_TESTS=1 \
+  uv run --project backend pytest backend/tests -q
+```
+
+完整后端测试调用真实 Chrome 时，夹具会在 loopback 临时端口启动商城 API 并挂载同源静态页，结束后回收服务。测试运行所需的合成 exchange 与政策由受信构造器/夹具提供，不启用真实外部调用，也无需启动持久演示容器。
+
+页面模拟测试另在一个终端启动 `npm run dev -- --host 127.0.0.1 --strictPort`，在另一终端运行 `npm run test:e2e -- e2e/customer-service.spec.ts`；完成后停止本次启动的 Vite。Chrome 路径沿用 `playwright.config.ts`。构建使用 `npm run build`。若环境缺少 Chrome、Node 或专用测试库，应记为阻塞，不能跳过后声称完整通过。
 
 ## 工单验收状态与未完成项
 

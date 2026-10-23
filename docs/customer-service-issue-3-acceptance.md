@@ -31,6 +31,14 @@ A后续独立修复f13a47e已合并：同页所有CSRF bootstrap与POST/续期�
 
 全套首次256 passed/1 failed/1 teardown error，已修复合成测试close接口及跨集成账本保留计数假设后得到上述最终258通过；未隐藏失败或声称外部/付费验证。无开发/演示库操作、无部署、无外部Issue写入。尚未执行C官方价格复核/请求金额持久化预留；必须用户看A/B证据后明确确认，≤200累计请求且≤20元，任一达到停止。
 
+## B审查后修复验证（2026-10-23）
+
+独立审查3项均修复：clarification也提交持久claim/result，22次相同重放保持原response且不扣新quota，同ID换正文409；11件真实fixture的模型list调用不再漏掉第11件（内部page_size20）；MCP受控错误码保持资源不可访问/非法参数/依赖失败/超时区别，模型model_unavailable、政策policy_unavailable，浏览器对应提示不同。共享绝对deadline的可协作挂起ASGI协议测试0.03秒上限触发mcp_timeout，非任意阻塞线程终止证明。
+
+修复前RED：clarification重放产生新request_id/时间；11fixture请求503。修复后：`uv run --project backend python -I /tmp/shop-phase-a-tests.py backend/tests/test_customer_service_consultations.py backend/tests/test_customer_service_model_transport.py backend/tests/test_customer_service_model_budget.py -q`：75 passed、2 warnings、20.60s。`npx playwright test e2e/customer-service.spec.ts --reporter=line`：14 passed、15.3s（含新增4错误类别显示）；`SHOP_RUN_BROWSER_TESTS=1 uv run --project backend python -I /tmp/shop-phase-a-tests.py backend/tests/test_customer_service_browser.py -q`：1 passed、2 warnings、3.30s，真实桌面/移动截图已更新。258全套通过是前一B提交结果，本次只运行受影响链路回归，不冒充新全套。临时Vite使用TaskStop回收，无保留服务器。
+
+累计真实提供方请求0、金额0，C未执行。仍仅整句受控语法及in-process ASGI HTTP；无公网/独立MCP进程/真实提供方验证。
+
 ## 五条验收要求与证据
 
 | 原始要求 | 核对结果 | 实现及验证证据 |

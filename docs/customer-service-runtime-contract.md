@@ -22,6 +22,8 @@ B覆盖旧固定文本限制：仅整句中文商品语法，支持“请问有�
 
 消息使用独立连接session advisory lock跨编排持有，短事务提交持久claim，业务读取后重新校验会话/页面/fixture；崩溃未知claim重放返回425 processing，绝不再执行。进程内ASGI调用不提供任意Python函数强制抢占；当前受控工具只有受statement_timeout保护的真实DB读取，超时返回后不宣称远端停止。具体证据及限制见验收单B节。订单/确认契约不变；C仍须用户看A/B后另行确认。
 
+B审查修订：澄清和明确政策不可用均走持久claim/result，原message_id同正文重放返回相同包、不再扣限流，换正文409。模型list{}由服务端转page_size20覆盖整个最多20件fixture；参数仍不取模型自由文本。MCP错误JSON-RPC使用受控data.code区分invalid_input/resource_unavailable/mcp_timeout/mcp_unavailable；模型失败model_unavailable，政策policy_unavailable，浏览器按code显示不同提示。ASGI每次await受min(3秒,整轮剩余)的asyncio.wait_for约束，共享绝对deadline；已用可协作挂起ASGI协议故障注入验证，不宣称能抢占任意阻塞Python函数。
+
 ## 当前范围及文档优先级
 
 用户批准仅作品集演示、虚构数据及专用账号，无真实买家数据、真实政策答复；接受商城立即禁止引用失效政策、WeKnora 异步清理并验证，撤销“平台失效瞬间原始检索零旧命中”要求。用户也已批准[演示配置方案](customer-service-demo-configuration-plan.md)：隔离部署、受控输入、安全日志7天及每小时回收、无运行期备份、fixture重建及RTO目标30分钟。以上是冻结的设计，不是已部署事实。

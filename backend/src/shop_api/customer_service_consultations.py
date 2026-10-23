@@ -105,7 +105,17 @@ class ConsultationRoute(APIRoute):
                 request._body = bytes(body)
                 result = await handler(request)
             except Exception as error:
-                if isinstance(error, ConsultationError):
+                from shop_api.customer_service_product_mcp import ProductMCPFailure
+                from shop_api.customer_service_model_loop import ModelUnavailable
+                if isinstance(error, ProductMCPFailure):
+                    code = error.code
+                    status_code = 403 if code == 'resource_unavailable' else 422 if code == 'invalid_input' else 503
+                    message = {'resource_unavailable': '未找到可访问的记录', 'invalid_input': '工具参数无效',
+                               'mcp_timeout': '商品查询超时，请稍后重试', 'mcp_unavailable': '商品查询服务暂不可用'}[code]
+                    failure = ConsultationError(status_code, code, message)
+                elif isinstance(error, ModelUnavailable):
+                    failure = ConsultationError(503, 'model_unavailable', '模型服务暂不可用')
+                elif isinstance(error, ConsultationError):
                     failure = error
                 elif isinstance(error, RequestValidationError):
                     failure = ConsultationError(422, "invalid_input", "请求参数无效")
@@ -283,19 +293,28 @@ def build_consultation_router(session_dependency, current_session):
                     raise ConsultationError(422, 'invalid_input', '请选择受支持的商品查询')
                 from shop_api.customer_service_language import understand
                 intent, name, args = understand(payload.text, request.app.state.customer_service_fixtures)
-                if name is None:
-                    return _envelope(request, "needs_clarification", {"reply": "请提供完整演示商品名称，并询问价格或库存；政策和检索服务暂不可用。", "cards": [], "citations": []})
         # Commit a durable unknown-result claim before any orchestration. Crash replay
         # returns this claim and can never silently execute the turn again.
         claim = _envelope(request, 'unavailable', code='processing', message='已有请求结果未能确认')
         db.add(ConsultationMessage(consultation_id=consultation.id, page_id=page.id,
                                   client_message_id=UUID(payload.client_message_id), body_hash=body_hash, response=claim))
         db.commit()
+        if name is None:
+            _lock_session(db, record, request.app.state.clock())
+            page, consultation = _page(db, record, payload.page_instance_id, request.app.state.clock())
+            policy = re.fullmatch(r'(?:请问)?(?:政策|退货政策|商城政策|检索服务)(?:是什么|可用吗|有哪些)?[？?。]?', payload.text.strip())
+            response = _envelope(request, 'unavailable' if policy else 'needs_clarification',
+                                 {'reply': '政策和检索服务暂不可用' if policy else '请提供完整演示商品名称，并询问价格或库存；政策和检索服务暂不可用。', 'cards': [], 'citations': []},
+                                 **({'code': 'policy_unavailable'} if policy else {}))
+            db.get(ConsultationMessage, key).response = response
+            page.last_used_at = consultation.last_used_at = request.app.state.clock()
+            db.commit()
+            return response
         from shop_api.customer_service_product_mcp import ProductMCP
         query_deadline = QueryDeadline(max(0, deadline - time.monotonic()))
         tools = ProductTools(db, request.app.state.customer_service_fixtures,
                              request.state.customer_service_request_id, request.app.state.clock, deadline=query_deadline)
-        mcp = ProductMCP(tools)
+        mcp = ProductMCP(tools, deadline=deadline)
         try:
             mcp.initialize()
             mcp.tools()
@@ -321,7 +340,7 @@ def build_consultation_router(session_dependency, current_session):
         if name == "list_products" and result["data"]["has_more"]:
             cards.append({"type": "product_page", "selection_text": f"查看演示商品第{result['data']['page'] + 1}页"})
         response = _envelope(request, 'partial' if degraded else result["status"], {"reply": "模型服务暂不可用，以下为已核验商品信息" if degraded else "已查询演示商品信息" if products else "未找到可访问的记录",
-                                                          "cards": cards, "citations": []})
+                                                          "cards": cards, "citations": []}, **({'code': degraded} if degraded else {}))
         # Log failure rolls back result persistence; there are no business writes here.
         request.app.state.customer_service_log_writer.write(request.state.customer_service_request_id, name, "", 0, len(products), now)
         db.get(ConsultationMessage, key).response = response

@@ -175,6 +175,27 @@ test('product bootstrap waits for consultation POST and renewal before rotating 
   await expect(page.getByRole('log')).not.toContainText('咨询页面已过期')
 })
 
+test('consultation distinguishes model MCP timeout MCP unavailable and policy failures', async ({ page }) => {
+  await page.route('**/api/customer-service/pages', route => route.fulfill({ status: 201, json: {
+    ...response('ok'), data: { page_instance_id: 'page-test', consultation_id: 'consultation-test' },
+  } }))
+  let code = 'model_unavailable'
+  await page.route('**/api/customer-service/messages', route => route.fulfill({ status: 503, json: {
+    ...response('unavailable'), code, data: null,
+  } }))
+  await page.goto('/customer-service.html')
+  for (const [category, text] of [
+    ['model_unavailable', '模型服务暂不可用，请稍后重试。'],
+    ['mcp_timeout', '商品查询超时，请稍后重试。'],
+    ['mcp_unavailable', '商品查询服务暂不可用，请稍后重试。'],
+    ['policy_unavailable', '政策和检索服务暂不可用。'],
+  ]) {
+    code = category
+    await page.getByRole('button', { name: '开始商品咨询', exact: true }).click()
+    await expect(page.getByRole('log').getByText(text, { exact: true })).toBeVisible()
+  }
+})
+
 test('consultation binds controlled messages and never automatically replays a POST', async ({ page }) => {
   const bodies: Record<string, unknown>[] = []
   await page.route('**/api/auth/csrf', route => route.fulfill({ json: { csrf_token: 'test-csrf' } }))

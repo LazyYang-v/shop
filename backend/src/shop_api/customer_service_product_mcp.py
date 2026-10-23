@@ -5,16 +5,23 @@ Identity/fixtures/turn counters are bound outside the JSON-RPC arguments.
 """
 import asyncio
 import json
+import time
 import httpx
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from shop_api.customer_service import CustomerServiceUnavailable
 from shop_api.customer_service_products import ListProductsArguments, GetProductArguments
+
+class ProductMCPFailure(CustomerServiceUnavailable):
+    def __init__(self, code='mcp_unavailable'):
+        self.code = code
+        super().__init__(code)
+
 
 VERSION = '2025-03-26'
 TOOLS = [dict(name=name, inputSchema=schema.model_json_schema()) for name, schema in
@@ -99,14 +106,22 @@ def product_mcp_app(tools):
             else:
                 return JSONResponse({'jsonrpc': '2.0', 'id': identifier, 'error': {'code': -32601, 'message': 'Unsupported method'}})
             return JSONResponse({'jsonrpc': '2.0', 'id': identifier, 'result': result})
-        except Exception:
-            return JSONResponse({'jsonrpc': '2.0', 'id': identifier, 'error': {'code': -32602, 'message': 'Product request unavailable'}})
+        except Exception as error:
+            category = ('resource_unavailable' if isinstance(error, HTTPException) and error.status_code == 403
+                        else 'invalid_input' if isinstance(error, HTTPException) and error.status_code == 422
+                        else 'mcp_timeout' if isinstance(error, (TimeoutError, httpx.TimeoutException))
+                        else 'invalid_input' if isinstance(error, ValueError)
+                        else 'mcp_unavailable')
+            return JSONResponse({'jsonrpc': '2.0', 'id': identifier, 'error': {
+                'code': -32602 if category == 'invalid_input' else -32000,
+                'message': 'Product request unavailable', 'data': {'code': category}}})
     return app
 
 
 class ProductMCP:
-    def __init__(self, tools):
-        self._app = product_mcp_app(tools)
+    def __init__(self, tools, *, deadline=None, asgi_app=None):
+        self._app = asgi_app if asgi_app is not None else product_mcp_app(tools)
+        self._deadline = deadline if deadline is not None else time.monotonic() + 45
         self._id = 0
         self._ready = False
 
@@ -117,6 +132,16 @@ class ProductMCP:
         if response.status_code != 200 or len(response.content) > 65536:
             raise CustomerServiceUnavailable
         value = response.json()
+        if (isinstance(value, dict) and set(value) == {'jsonrpc', 'id', 'error'}
+                and value['jsonrpc'] == '2.0' and type(value['id']) is int and value['id'] == self._id):
+            error = value['error']
+            allowed = {'invalid_input', 'resource_unavailable', 'mcp_timeout', 'mcp_unavailable'}
+            if (isinstance(error, dict) and set(error) == {'code', 'message', 'data'}
+                    and type(error['code']) is int and error['code'] in {-32602, -32000}
+                    and error['message'] == 'Product request unavailable' and isinstance(error['data'], dict)
+                    and set(error['data']) == {'code'} and error['data']['code'] in allowed):
+                raise ProductMCPFailure(error['data']['code'])
+            raise ProductMCPFailure()
         if (not isinstance(value, dict) or set(value) != {'jsonrpc', 'id', 'result'}
                 or value['jsonrpc'] != '2.0' or type(value['id']) is not int or value['id'] != self._id):
             raise CustomerServiceUnavailable
@@ -152,8 +177,21 @@ class ProductMCP:
     def _post(self, path, **kwargs):
         async def send():
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self._app), base_url='http://shop-local') as client:
-                return await client.post(path, **kwargs)
-        return asyncio.run(send())
+                remaining = min(3.0, self._deadline - time.monotonic())
+                if remaining <= 0:
+                    raise ProductMCPFailure('mcp_timeout')
+                response = await asyncio.wait_for(client.post(path, **kwargs), timeout=remaining)
+                if time.monotonic() >= self._deadline:
+                    raise ProductMCPFailure('mcp_timeout')
+                return response
+        try:
+            return asyncio.run(send())
+        except (TimeoutError, httpx.TimeoutException):
+            raise ProductMCPFailure('mcp_timeout') from None
+        except ProductMCPFailure:
+            raise
+        except Exception:
+            raise ProductMCPFailure() from None
 
     def close(self):
         pass

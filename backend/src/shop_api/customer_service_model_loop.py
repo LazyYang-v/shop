@@ -8,14 +8,22 @@ from shop_api.customer_service_model import ModelProductFacts, prepare_model_req
 from shop_api.customer_service_model_turn import ModelTurn
 
 
+class ModelUnavailable(CustomerServiceUnavailable):
+    pass
+
+
 def run_product_loop(request, session_id, deadline, mcp, product_id, transport):
     verified = {}
     try:
         return _run_product_loop(request, session_id, deadline, mcp, product_id, transport, verified)
-    except Exception:
+    except Exception as error:
+        from shop_api.customer_service_product_mcp import ProductMCPFailure
+        code = error.code if isinstance(error, ProductMCPFailure) else 'model_unavailable'
         if verified.get('result') is not None and time.monotonic() < deadline:
-            return {**verified['result'], 'model_degraded': True}
-        raise CustomerServiceUnavailable from None
+            return {**verified['result'], 'model_degraded': code}
+        if isinstance(error, ProductMCPFailure):
+            raise
+        raise ModelUnavailable from None
 
 
 def _run_product_loop(request, session_id, deadline, mcp, product_id, transport, verified_state):
@@ -71,7 +79,7 @@ def _run_product_loop(request, session_id, deadline, mcp, product_id, transport,
                 verified = mcp.call(name, {'product_id': facts.resolve(reference)})
                 data = verified['data']
             elif name == 'list_products' and arguments == {}:
-                verified = mcp.call(name, {})
+                verified = mcp.call(name, {'page_size': 20})
                 data = next((item for item in verified['data']['items'] if item['id'] == product_id), None)
                 if data is None:
                     raise CustomerServiceUnavailable

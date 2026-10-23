@@ -12,7 +12,7 @@
 
 ## Phase B 最新窄范围覆盖（2026-10-23）
 
-B仅本地虚构fixture、整句中文受控语法及合成模型。整句识别/澄清、ASGI HTTP MCP2025-03-26、UUID业务Schema与product_N模型门面的分层、共享账本和durable claim选择以[运行契约B节](customer-service-runtime-contract.md#phase-b-本地合成实施2026-10-23)为当前规范。HTTP增加200/status=needs_clarification、data={reply,cards:[],citations:[]}；已claim未知结果重放425/processing；模型失败已有核验事实200/partial，无事实503/dependency_unavailable。政策仍不可用。模型facade list_products仅{}，get_product仅product_ref枚举；下文业务MCP UUID schema不改，订单与确认不改。生产真实provider无条件关闭，C另行授权。
+B仅本地虚构fixture、整句中文受控语法及合成模型。整句识别/澄清、ASGI HTTP MCP2025-03-26、UUID业务Schema与product_N模型门面的分层、共享账本和durable claim选择以[运行契约B节](customer-service-runtime-contract.md#phase-b-本地合成实施2026-10-23)为当前规范。HTTP增加200/status=needs_clarification、data={reply,cards:[],citations:[]}；已claim未知结果重放425/processing；模型失败已有核验事实200/partial，无事实503/dependency_unavailable。政策仍不可用。模型facade list_products仅{}，get_product仅product_ref枚举；下文业务MCP UUID schema不改，订单与确认不改。生产真实provider无条件关闭，C另行授权。B审查补充code：model_unavailable、mcp_timeout、mcp_unavailable；保留resource_unavailable/invalid_input，不将业务不可访问或协议错误都改成依赖失败。明确政策问题200/unavailable/policy_unavailable、data含固定reply及空cards/citations；未知语法仍needs_clarification。两者均持久去重，同message_id换正文409；相同重放不重复扣额度。
 
 ## 最新授权与验收修订（2026-10-22）
 

@@ -216,11 +216,14 @@
       const result = await response.json();
       if (!response.ok) {
         if ([401, 403, 409, 410].includes(response.status)) invalidateConsultation();
-        appendMessage(response.status === 410 ? '咨询页面已过期，请重新开始商品咨询。'
+        const dependencyMessage = { model_unavailable: '模型服务暂不可用，请稍后重试。',
+          mcp_timeout: '商品查询超时，请稍后重试。', mcp_unavailable: '商品查询服务暂不可用，请稍后重试。',
+          policy_unavailable: '政策和检索服务暂不可用。', resource_unavailable: '未找到可访问的记录。', invalid_input: '请求参数无效。' }[result.code];
+        appendMessage(dependencyMessage || (response.status === 410 ? '咨询页面已过期，请重新开始商品咨询。'
           : response.status === 401 ? '会话已失效，请重新开始商品咨询。'
           : response.status === 409 ? '咨询状态已变化，请重新开始。'
           : response.status === 429 ? '咨询过于频繁，请稍后重试。'
-          : '商品咨询暂不可用，请稍后重试。');
+          : '商品咨询暂不可用，请稍后重试。'));
         return null;
       }
       return result;

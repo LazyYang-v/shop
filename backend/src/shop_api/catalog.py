@@ -44,8 +44,8 @@ class ProductListResponse(BaseModel):
 
 
 class CatalogQuery(BaseModel):
-    q: str = ""
-    category: str | None = None
+    q: str = Field(default="", max_length=120)
+    category: str | None = Field(default=None, max_length=80)
     sort: str = Field(default="popular", pattern="^(popular|price_asc|price_desc)$")
     page: int = Field(default=1, ge=1)
     page_size: int = Field(default=20, ge=1, le=100)

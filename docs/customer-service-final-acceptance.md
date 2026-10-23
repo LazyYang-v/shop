@@ -87,6 +87,7 @@ R06 是同一隔离库上的应用重启，R09 是从版本化 fixture 创建新
 |---|---|---|
 | 独立离线相关性参考 | 40/40 通过 | `python3 -I docs/policy-relevance-offline.py`；无外部调用，未回放临时真实候选文件；不代表商城 API 或生产质量 |
 | 部署静态预检 | 通过 | `python3 -I deploy/customer-service-demo/preflight.py`；合成配置，默认 0 服务；未启动/更新容器 |
+| 当前持久演示版本观察 | 仍是 #6 方案镜像 | 只读 `docker ps` 显示 `shop-customer-service-demo-api:20261023-cancel-proposal`，不是 #9 源码；本轮不将其当作新功能部署证明，不更新该环境 |
 | 组合 API 的 TDD 定向循环 | 3 passed，11 deselected | 实施工作区报告三条新用例均先 RED 后 GREEN；只证明这三条公共 API 行为，最终分支仍需回归 |
 | 当前分支 API/真实 PostgreSQL 完整回归 | 待运行 | 两个数据库 URL 都必须指向 `127.0.0.1:55445/shop_test`，只在测试进程启用既有清理授权 |
 | 当前分支桌面与移动真实 Chrome | 待运行 | 不以桌面流程外加移动截图替代移动交互；记录具体组合流程和结果 |

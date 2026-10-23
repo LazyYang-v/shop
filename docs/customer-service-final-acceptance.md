@@ -108,7 +108,7 @@ SHOP_DATABASE_URL="$SHOP_TEST_DATABASE_URL" \
   uv run --project backend pytest backend/tests -q
 ```
 
-完整后端测试调用真实 Chrome 时，夹具会在 loopback 临时端口启动商城 API 并挂载同源静态页，结束后回收服务。测试运行所需的合成 exchange 与政策由受信构造器/夹具提供，不启用真实外部调用，也无需启动持久演示容器。
+完整后端测试调用真实 Chrome 时，夹具会在 loopback 临时端口启动商城 API 并挂载同源静态页，结束后回收服务。测试运行所需的合成 exchange 与政策由受信构造器/夹具提供，不启用真实外部调用，也无需启动持久演示容器。截图保存在该次 pytest 的 `tmp_path` 下，由夹具通过 `SHOP_BROWSER_TEST_ARTIFACT_DIRECTORY` 传给浏览器脚本；桌面/移动组合截图为 `ticket-9-composite-desktop.png`、`ticket-9-composite-mobile.png`，不使用固定共享 `/tmp` 文件作成功判据。临时截图只辅助核对页面，公共请求断言仍是通过依据；它们不是长期证据归档。
 
 页面模拟测试另在一个终端启动 `npm run dev -- --host 127.0.0.1 --strictPort`，在另一终端运行 `npm run test:e2e -- e2e/customer-service.spec.ts`；完成后停止本次启动的 Vite。Chrome 路径沿用 `playwright.config.ts`。构建使用 `npm run build`。若环境缺少 Chrome、Node 或专用测试库，应记为阻塞，不能跳过后声称完整通过。
 

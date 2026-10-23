@@ -50,7 +50,7 @@
 | B05 | 超过 10 页面、闲置 10 分钟、咨询 30 分钟/24 小时 | LRU 原子撤销旧资格；到期不可续活；新标签独立，合法交接只消费一次 | 待本轮 | 咨询 `test_lru_evicts_oldest_and_expiry_cannot_be_renewed`、`test_consultation_idle_and_absolute_deadlines`、`test_handoff_consumes_predecessor_and_renewal_keeps_token`；方案 LRU/交接测试 |
 | B06 | 消息超过 16KiB/2000 码点、额外字段、非法页码、重复消息换正文 | 拒绝输入；同消息同正文持久重放不重复工具或签发 | 待本轮 | 咨询 `test_byte_and_codepoint_limits_and_csrf`、`test_uncontrolled_inputs_and_unknown_fields_rejected`、`test_list_select_and_dedupe_do_not_repeat_tools`；方案重放测试 |
 | B07 | 撤回/未来/过期/删除残留政策或未知映射 | 无资格引用；conflict/no_match/unavailable 分别呈现 | 待本轮 | 政策 `test_withdrawn_expired_future_and_deleted_residue_are_never_current_basis`、`test_policy_message_keeps_no_match_conflict_and_unavailable_distinct` |
-| B08 | 分类工具次数、重复规范参数、模型请求/用量/时间上限 | 不挪用分类额度，不换未批准工具；只展示已核验事实 | 待本轮 | 商品调用额度、模型四次/45 秒及共享预算回归；#9 模型组合预算场景 |
+| B08 | 分类工具次数、重复规范参数、模型请求/用量/时间上限 | 不挪用分类额度，不换未批准工具；只展示已核验事实 | 工作区模型组合定向 6 项通过；待合入完整回归 | `test_customer_service_orders.py::test_synthetic_composition_stops_safely_with_verified_partial_results[duplicate/execute/extra/withdraw/unfinished/budget]`；商品与模型预算回归 |
 
 ### 取消、恢复及运行回归
 
@@ -77,7 +77,7 @@ R06 是同一隔离库上的应用重启，R09 是从版本化 fixture 创建新
 | S03 | 退出、账号切换、会话到期或旧页面请求 | 旧授权失效；停止核验，不能跨会话复用 | 待本轮 | 订单 `test_invalid_session_logout_and_account_switch_invalidate_old_authorization`；方案跨买家及交接测试；Playwright 身份失效停止 |
 | S04 | 缺 CSRF、错误 Origin、篡改页面/咨询/操作/凭据 | 拒绝且不改变订单；编号本身不是授权 | 待本轮 | 咨询 CSRF/绑定测试；方案 `test_confirmation_rejects_missing_csrf_wrong_origin_and_wrong_binding`、`test_reconcile_is_protected_and_bound_to_original_buyer_page` |
 | S05 | 商品/索引含恶意指令，输入混合私人文本、额外身份或未批准工具 | 文案只当数据；本地澄清或受控拒绝；无越权执行/身份/秘密发送 | 待本轮 | 咨询 `test_unrecognized_private_text_never_enters_exchange`、`test_malformed_model_calls_fail_closed_without_replay`；政策注入测试；#9 组合场景 |
-| S06 | 签发确认卡、模型工具结果、页面 DOM/URL/storage、安全日志 | 凭据仅一次浏览器内存，服务端只存哈希；模型无订单号、地址电话、运单号和秘密 | 待本轮 | 方案 `test_operation_is_bound_and_only_the_credential_hash_is_persisted`；真实浏览器哨兵及存储检查；#9 模型边界 |
+| S06 | 签发确认卡、模型工具结果、页面 DOM/URL/storage、安全日志 | 凭据仅一次浏览器内存，服务端只存哈希；模型无订单号、地址电话、运单号和秘密 | 工作区六工具模型定向通过；待合入全边界回归 | `test_customer_service_orders.py::test_synthetic_composition_uses_six_tools_without_private_data_or_execution`；方案哈希持久化测试、真实浏览器哨兵及存储检查 |
 | S07 | 自然语言“好的”、模型请求 confirm/reconcile/任意 URL/SQL | 不执行；确认/核验不在模型工具集，目标只能取服务端选择 | 待本轮 | 方案 `test_ordinary_chat_text_is_not_consent_and_proposal_logs_are_allowlisted`；MCP extras/mismatch；#9 模型组合测试 |
 | S08 | 未批准账号/管理员、fixture 修改、共享额度存储故障 | 客服 fail-closed，无管理员代查或每进程静默回退 | 待本轮 | `test_customer_service_admission.py`、`test_customer_service_startup.py`、共享限流与模型预算故障测试 |
 
@@ -89,6 +89,7 @@ R06 是同一隔离库上的应用重启，R09 是从版本化 fixture 创建新
 | 部署静态预检 | 通过 | `python3 -I deploy/customer-service-demo/preflight.py`；合成配置，默认 0 服务；未启动/更新容器 |
 | 当前持久演示版本观察 | 仍是 #6 方案镜像 | 只读 `docker ps` 显示 `shop-customer-service-demo-api:20261023-cancel-proposal`，不是 #9 源码；本轮不将其当作新功能部署证明，不更新该环境 |
 | 组合 API 的 TDD 定向循环 | 3 passed，11 deselected | 实施工作区报告三条新用例均先 RED 后 GREEN；只证明这三条公共 API 行为，最终分支仍需回归 |
+| 六工具合成模型及受控失败定向循环 | 六工具场景 1 passed；六类失败场景 6 passed | 工作区报告：构造器缺失初始 RED；预算不足初始 503 修为可独立完成查询的 partial/budget_exhausted。逐项用例见 S06/B08；不代表真实提供方兼容性 |
 | 当前分支 API/真实 PostgreSQL 完整回归 | 待运行 | 两个数据库 URL 都必须指向 `127.0.0.1:55445/shop_test`，只在测试进程启用既有清理授权 |
 | 当前分支桌面与移动真实 Chrome | 待运行 | 不以桌面流程外加移动截图替代移动交互；记录具体组合流程和结果 |
 | 当前分支 Playwright 页面模拟套件 | 待运行 | 与真实 API 证据分开，不证明事务或外部依赖 |

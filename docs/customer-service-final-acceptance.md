@@ -35,9 +35,9 @@
 | G02 | 匿名：“请问春日轻盈针织开衫的价格和库存？”；合成 exchange | 受控模型工具往返，最终事实与商品 API 一致；不发送原始商品名称/UUID | 待本轮 | 同文件 `test_anonymous_compound_question_completes_synthetic_tool_loop`；`test_customer_service_browser.py` |
 | G03 | “演示商城多久发货？” | 显示“虚构演示政策（非真实商城政策）”、v2、来源和生效区间，不声称真实商城承诺 | 待本轮 | `test_customer_service_policy.py::test_policy_message_returns_citation_without_calling_a_model`；真实浏览器 |
 | G04 | 买家：“查询我的订单”→点击一笔本人已发货订单 | 先候选后详情；已保存物流公司/运单号/发货时间与订单 API 一致，无实时轨迹及预计送达 | 待本轮 | `test_customer_service_orders.py::test_zero_one_and_multiple_orders_require_explicit_selection`、`test_order_detail_returns_only_trimmed_saved_facts`；真实浏览器 |
-| G05 | 已明确选择本人待收货订单：“快递未到，我想退款” | 读取该单、展示已保存物流，说明无实时轨迹和退款接口；不生成不适用的取消方案、不声称退款受理 | 初始 RED：返回 needs_clarification，预期 ok；待修复验证 | `test_customer_service_orders.py::test_delivery_refund_consultation_shows_selected_saved_logistics_and_capability_limits`；桌面/移动真实浏览器场景 |
-| G06 | 已明确选择本人未超时待支付订单：同一组合诉求 | 只在条件满足时提出取消方案；明确取消不是退款，订单与库存签发前后不变，须按钮确认才执行 | 待本轮 | #9 新增组合 API 与真实浏览器场景；原方案/确认回归 |
-| G07 | 已选订单，政策检索故障；继续固定订单查询 | 政策不可用单独说明，固定订单查询独立成功且不调用模型/真实检索 | 待本轮 | #9 新增组合/依赖隔离场景；订单和政策 API 回归 |
+| G05 | 已明确选择本人待收货订单：“快递未到，我想退款” | 读取该单、展示已保存物流，说明无实时轨迹和退款接口；不生成不适用的取消方案、不声称退款受理 | 工作区定向 GREEN；初始 RED 为 needs_clarification 而非 ok；待合入回归与真实浏览器 | `test_customer_service_orders.py::test_delivery_refund_consultation_shows_selected_saved_logistics_and_capability_limits` |
+| G06 | 已明确选择本人未超时待支付订单：同一组合诉求 | 只在条件满足时提出取消方案；明确取消不是退款，订单与库存签发前后不变，须按钮确认才执行 | 工作区定向 GREEN；初始 RED 未返回确认卡；待合入回归与真实浏览器 | 同文件 `test_delivery_refund_only_proposes_for_explicit_pending_unexpired_order`；原方案/确认回归 |
+| G07 | 已选订单，政策检索故障；继续固定订单查询 | 政策不可用单独说明，固定订单查询独立成功且不调用模型/真实检索 | 工作区定向 GREEN；初始 RED 为 needs_clarification；待合入回归与真实浏览器 | 同文件 `test_composite_policy_outage_keeps_independent_selected_order_query`；预期 partial/policy_unavailable，附事实来源及查询时间 |
 
 ### 边界场景
 
@@ -87,7 +87,8 @@ R06 是同一隔离库上的应用重启，R09 是从版本化 fixture 创建新
 |---|---|---|
 | 独立离线相关性参考 | 40/40 通过 | `python3 -I docs/policy-relevance-offline.py`；无外部调用，未回放临时真实候选文件；不代表商城 API 或生产质量 |
 | 部署静态预检 | 通过 | `python3 -I deploy/customer-service-demo/preflight.py`；合成配置，默认 0 服务；未启动/更新容器 |
-| 当前分支 API/真实 PostgreSQL 回归 | 待运行 | 两个数据库 URL 都必须指向 `127.0.0.1:55445/shop_test`，只在测试进程启用既有清理授权 |
+| 组合 API 的 TDD 定向循环 | 3 passed，11 deselected | 实施工作区报告三条新用例均先 RED 后 GREEN；只证明这三条公共 API 行为，最终分支仍需回归 |
+| 当前分支 API/真实 PostgreSQL 完整回归 | 待运行 | 两个数据库 URL 都必须指向 `127.0.0.1:55445/shop_test`，只在测试进程启用既有清理授权 |
 | 当前分支桌面与移动真实 Chrome | 待运行 | 不以桌面流程外加移动截图替代移动交互；记录具体组合流程和结果 |
 | 当前分支 Playwright 页面模拟套件 | 待运行 | 与真实 API 证据分开，不证明事务或外部依赖 |
 | 全后端类型检查基线 | 未通过：18 项既有诊断 | 在 #9 实现合入前运行 `uv run --project backend ty check backend/src/shop_api`；分布为 cancel 7、model_budget 3、model_transport 5、spend_guard 1、reconcile_demo_catalog 2；最终检查需区分新增诊断 |

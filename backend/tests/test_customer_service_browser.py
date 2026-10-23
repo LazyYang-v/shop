@@ -59,6 +59,14 @@ def test_customer_service_browser_queries_real_isolated_catalog(client, tmp_path
                                   json={'address_id': address['id']})
     assert reconcile_order.status_code == 201
     reconcile_order_id = reconcile_order.json()['id']
+    composite_order_ids = []
+    for _ in range(2):
+        assert client.post('/api/cart/items', headers=headers, json={
+            'product_id': '00000000-0000-0000-0000-000000000001', 'quantity': 1}).status_code == 201
+        composite_order = client.post('/api/orders', headers={**headers, 'Idempotency-Key': secrets.token_hex(16)},
+                                      json={'address_id': address['id']})
+        assert composite_order.status_code == 201
+        composite_order_ids.append(composite_order.json()['id'])
     from sqlalchemy import text as sql_text
     from datetime import timedelta
     with client.app.state.session_factory.begin() as db:
@@ -71,6 +79,9 @@ def test_customer_service_browser_queries_real_isolated_catalog(client, tmp_path
         db.execute(sql_text("UPDATE orders SET expires_at=:expires WHERE id IN (:cancel_id, :reconcile_id)"),
                    {'expires': client.app.state.clock() + timedelta(minutes=10),
                     'cancel_id': cancel_order_id, 'reconcile_id': reconcile_order_id})
+        for composite_order_id in composite_order_ids:
+            db.execute(sql_text('UPDATE orders SET expires_at=:expires WHERE id=:id'), {
+                'expires': client.app.state.clock() + timedelta(minutes=10), 'id': composite_order_id})
         # The synthetic catalog fixture fixes stock at 24; this seeded order is
         # display-only and must not make the verified fixture fail closed.
         db.execute(sql_text("UPDATE products SET stock=24 WHERE id='00000000-0000-0000-0000-000000000001'"))
@@ -103,7 +114,30 @@ def test_customer_service_browser_queries_real_isolated_catalog(client, tmp_path
                          'function': {'name': 'get_product', 'arguments': '{"product_ref":"product_1"}'}}]})
         return {'object': 'chat.completion', 'choices': [{'finish_reason': 'stop' if tool_reply else 'tool_calls', 'message': message}],
                 'usage': {'prompt_tokens': 150, 'completion_tokens': 30}}
-    app = create_app(database_url=url, synthetic_product_exchange=synthetic_exchange)
+    composite_exchanges = []
+    def synthetic_composite_exchange(payload, token, timeout):
+        composite_exchanges.append(json.dumps(payload, ensure_ascii=False))
+        replies = {call['function']['name'] for message in payload['messages']
+                   for call in message.get('tool_calls', [])}
+        question = json.loads(payload['messages'][1]['content'])
+        calls = []
+        if 'get_my_order' not in replies:
+            calls.append(('get_my_order', {'order_ref': 'order_1'}))
+        if question['policy_refs'] and 'search_policy' not in replies:
+            calls.append(('search_policy', {'policy_ref': 'policy_1'}))
+        if question['request_proposal'] and 'get_my_order' in replies and 'propose_cancel' not in replies:
+            order_result = next(json.loads(message['content']) for message in payload['messages']
+                                if message['role'] == 'tool' and 'cancel_eligible' in json.loads(message['content']))
+            if order_result['cancel_eligible']:
+                calls.append(('propose_cancel', {'order_ref': 'order_1'}))
+        message = ({'role': 'assistant', 'content': None, 'tool_calls': [
+            {'id': f'model_{len(composite_exchanges)}_{i}', 'type': 'function',
+             'function': {'name': name, 'arguments': json.dumps(arguments)}} for i, (name, arguments) in enumerate(calls)]}
+            if calls else {'role': 'assistant', 'content': '{"intent":"composite"}'})
+        return {'object': 'chat.completion', 'choices': [{'finish_reason': 'tool_calls' if calls else 'stop', 'message': message}],
+                'usage': {'prompt_tokens': 150, 'completion_tokens': 30}}
+    app = create_app(database_url=url, synthetic_product_exchange=synthetic_exchange,
+                     synthetic_consultation_exchange=synthetic_composite_exchange)
     from fastapi import Header, HTTPException
     test_clock_key = secrets.token_urlsafe(32)
     clock_offset = timedelta()
@@ -116,6 +150,19 @@ def test_customer_service_browser_queries_real_isolated_catalog(client, tmp_path
         if not secrets.compare_digest(x_test_key, test_clock_key) or not 0 <= minutes <= 31:
             raise HTTPException(403)
         clock_offset += timedelta(minutes=minutes)
+        return {'ok': True}
+
+    @app.post('/__test/policy-outage')
+    def policy_outage(enabled: bool, x_test_key: str = Header()):
+        if not secrets.compare_digest(x_test_key, test_clock_key):
+            raise HTTPException(403)
+        from shop_api.customer_service_policy import load_synthetic_policy_fixture
+        registry, index = load_synthetic_policy_fixture(str(policy), hashlib.sha256(policy.read_bytes()).hexdigest())
+        class UnavailableIndex:
+            def search(self, *args, **kwargs):
+                raise TimeoutError('PRIVATE_POLICY_SENTINEL')
+        app.state.customer_service_policy_registry = registry
+        app.state.customer_service_policy_index = UnavailableIndex() if enabled else index
         return {'ok': True}
 
     root = Path(__file__).resolve().parents[2]
@@ -137,22 +184,28 @@ def test_customer_service_browser_queries_real_isolated_catalog(client, tmp_path
                        SHOP_BROWSER_TEST_EMAIL_2=emails[1], SHOP_BROWSER_TEST_ORDER_ID=order_id,
                        SHOP_BROWSER_TEST_CANCEL_ORDER_ID=cancel_order_id,
                        SHOP_BROWSER_TEST_RECONCILE_ORDER_ID=reconcile_order_id,
+                       SHOP_BROWSER_TEST_COMPOSITE_ORDER_IDS=json.dumps(composite_order_ids),
+                       SHOP_BROWSER_TEST_ARTIFACT_DIRECTORY=str(tmp_path),
                        SHOP_BROWSER_TEST_CLOCK_KEY=test_clock_key)
-            result = subprocess.run(['node', str(root / 'e2e/customer-service-real.mjs')], env=env, capture_output=True, text=True, timeout=45)
+            result = subprocess.run(['node', str(root / 'e2e/customer-service-real.mjs')], env=env, capture_output=True, text=True, timeout=90)
             assert result.returncode == 0, result.stdout + result.stderr
         finally:
             server.should_exit = True
             thread.join(timeout=10)
             assert not thread.is_alive()
     app.state.customer_service_synthetic_transport.close()
+    app.state.customer_service_composite_transport.close()
     with app.state.session_factory.begin() as db:
         created_reservations = set(db.scalars(text('SELECT id FROM customer_service_model_reservations'))) - previous_reservations
         for reservation_id in created_reservations:
             db.execute(text('DELETE FROM customer_service_model_reservations WHERE id=:id'), {'id': reservation_id})
     assert len(exchanges) == 4
+    assert len(composite_exchanges) == 14
+    exchanges.extend(composite_exchanges)
+    assert all((tmp_path / f'ticket-9-composite-{label}.png').is_file() for label in ('desktop', 'mobile'))
     for forbidden in ['PRIVATE_SENTINEL', 'PRIVATE_POLICY_SENTINEL', 'PRIVATE_RESEARCH_SENTINEL',
                       'PRIVATE_PHONE_SENTINEL', 'PRIVATE_ADDRESS_SENTINEL', 'DEMO-BROWSER-001', order_id,
-                      cancel_order_id, '春日', '00000000-0000-0000-0000-000000000001', password, test_clock_key, *emails]:
+                      cancel_order_id, *composite_order_ids, '春日', '00000000-0000-0000-0000-000000000001', password, test_clock_key, *emails]:
         assert all(forbidden not in exchange for exchange in exchanges)
         assert all(forbidden not in path.read_text() for path in logs.glob('*.jsonl'))
     records = [json.loads(line) for path in logs.glob('customer-service-*.jsonl') for line in path.read_text().splitlines()]

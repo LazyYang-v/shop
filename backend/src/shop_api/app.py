@@ -49,7 +49,7 @@ from shop_api.identity import (
 
 
 def create_app(database_url: str | None = None, *, synthetic_product_exchange=None,
-               product_transport=None) -> FastAPI:
+               product_transport=None, synthetic_consultation_exchange=None) -> FastAPI:
     resolved_database_url = database_url or os.getenv("SHOP_DATABASE_URL")
     if not resolved_database_url:
         raise RuntimeError("SHOP_DATABASE_URL must be configured")
@@ -81,6 +81,8 @@ def create_app(database_url: str | None = None, *, synthetic_product_exchange=No
                 await customer_service_task
             if application.state.customer_service_synthetic_transport is not None:
                 await asyncio.to_thread(application.state.customer_service_synthetic_transport.close)
+            if application.state.customer_service_composite_transport is not None:
+                await asyncio.to_thread(application.state.customer_service_composite_transport.close)
             factory.kw["bind"].dispose()
 
     app = FastAPI(title="Shop Portfolio API", version="0.1.0", lifespan=lifespan)
@@ -114,6 +116,16 @@ def create_app(database_url: str | None = None, *, synthetic_product_exchange=No
         app.state.customer_service_synthetic_transport = CompletionTransport(
             ModelBudget(factory, clock=lambda: app.state.clock(), product_only=True),
             exchange=synthetic_product_exchange)
+
+    app.state.customer_service_composite_transport = None
+    if synthetic_consultation_exchange is not None:
+        from shop_api.customer_service_model_budget import ModelBudget
+        from shop_api.customer_service_model_transport import CompletionTransport
+        if synthetic_consultation_exchange is CompletionTransport._https_exchange:
+            raise ValueError('Composite consultations only allow a synthetic exchange')
+        app.state.customer_service_composite_transport = CompletionTransport(
+            ModelBudget(factory, clock=lambda: app.state.clock(), product_only=True),
+            exchange=synthetic_consultation_exchange)
 
     async def customer_service_maintenance(application: FastAPI) -> None:
         maintenance = CustomerServiceMaintenance(
@@ -158,8 +170,10 @@ def create_app(database_url: str | None = None, *, synthetic_product_exchange=No
                 application.state.customer_service_policy_index = index
             application.state.customer_service_fixtures = fixtures
             application.state.customer_service_buyer_ids = buyer_ids
-            if application.state.customer_service_synthetic_transport is not None:
-                application.state.customer_service_synthetic_transport._budget._approved_buyer_ids = frozenset(buyer_ids)
+            for transport in (application.state.customer_service_synthetic_transport,
+                              application.state.customer_service_composite_transport):
+                if transport is not None:
+                    transport._budget._approved_buyer_ids = frozenset(buyer_ids)
             application.state.customer_service_log_writer = writer
             application.state.customer_service_enabled = True
         except CustomerServiceUnavailable:

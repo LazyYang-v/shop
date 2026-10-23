@@ -31,6 +31,7 @@ from shop_api.customer_service_cancel import (
     invalidate_pending_proposals_for_pages,
     replay_proposal_response,
 )
+from shop_api.customer_service_language import understand_composite
 from shop_api.customer_service_orders import OrderTools, looks_like_order_question, understand_order
 from shop_api.customer_service_products import ProductTools
 from shop_api.database import Base
@@ -321,6 +322,55 @@ def _order_turn(payload: MessageInput, request: Request, record: AuthSession, db
     request.app.state.customer_service_log_writer.write(
         request.state.customer_service_request_id, name, '', int((time.monotonic() - started) * 1000), len(cards), now)
     _store_response(db, key, response)
+    page.last_used_at = consultation.last_used_at = now
+    db.commit()
+    return response
+
+
+def _composite_turn(payload, request, record, db, page, consultation, body_hash, key, deadline, intent):
+    from shop_api.customer_service_composite import CompositeTools
+
+    buyer = None
+    if intent.orders or payload.selected_order_id is not None:
+        if record.kind != 'authenticated' or record.user_id is None:
+            raise ConsultationError(401, 'authentication_required', '请登录后查看本人订单')
+        buyer = require_demo_buyer(request, record, db)
+        if payload.selected_order_id is not None:
+            _order_probe_rate(request, buyer)
+            selected = _selected_order(db, buyer, payload.selected_order_id)
+            _record_selection(db, page, selected, request.app.state.clock())
+    require_query_rate_limits(request)
+    claim = _envelope(request, 'unavailable', code='processing', message='已有请求结果未能确认')
+    db.add(ConsultationMessage(consultation_id=consultation.id, page_id=page.id,
+                              client_message_id=UUID(payload.client_message_id), body_hash=body_hash, response=claim))
+    db.commit()
+    def proposal_rate():
+        assert buyer is not None
+        _rate(request, 'cancel_proposal:' + hashlib.sha256(str(buyer.id).encode()).hexdigest(), 5)
+    tools = CompositeTools(request, db, buyer, page, intent, deadline, proposal_rate)
+    transport = request.app.state.customer_service_composite_transport
+    if transport is not None:
+        try:
+            tools.run_model(record.id, transport)
+        except Exception:
+            from shop_api.customer_service_model_loop import ModelUnavailable
+            raise ModelUnavailable from None
+    else:
+        tools.run_deterministic()
+    now = request.app.state.clock()
+    _lock_session(db, record, now)
+    require_product_reader(request, record, db)
+    if buyer:
+        require_demo_buyer(request, record, db)
+    page, consultation = _page(db, record, payload.page_instance_id, now)
+    QueryDeadline(max(0, deadline - time.monotonic())).check()
+    tools.revalidate_policy()
+    code = tools.code()
+    response = _envelope(request, 'partial' if code else 'ok', tools.response_data(),
+                         **({'code': code} if code else {}))
+    if tools.confirmation_card is not None:
+        response['confirmation_card'] = tools.confirmation_card
+    _store_response(db, key, replay_proposal_response(response) if tools.confirmation_card else response)
     page.last_used_at = consultation.last_used_at = now
     db.commit()
     return response
@@ -658,6 +708,9 @@ def build_consultation_router(session_dependency, current_session):
             raise ConsultationError(422, "invalid_input", "请选择受支持的服务查询")
         if payload.text is not None and payload.text.strip() == CANCEL_TRIGGER_TEXT:
             return _cancel_turn(payload, request, record, db, page, consultation, body_hash, key, deadline)
+        composite = understand_composite(payload.text or '', request.app.state.customer_service_fixtures)
+        if composite is not None:
+            return _composite_turn(payload, request, record, db, page, consultation, body_hash, key, deadline, composite)
         if payload.selected_order_id is not None or looks_like_order_question(payload.text or ""):
             return _order_turn(payload, request, record, db, page, consultation, body_hash, key, deadline)
         require_query_rate_limits(request)

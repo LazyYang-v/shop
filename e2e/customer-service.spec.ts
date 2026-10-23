@@ -355,6 +355,49 @@ test('order candidates require an explicit click before detail and never render 
   await expect(log).not.toContainText('预计送达：')
 })
 
+test('selected buyer order receives composite refund limits and per-item partial sources', async ({ page }) => {
+  const orderNumber = '11111111-1111-4111-8111-111111111111'
+  const queriedAt = '2026-10-23T12:00:00+00:00'
+  const detail = { order_number: orderNumber, status: 'pending_receipt', total: '129.00',
+    product_summary: '测试商品 ×1', expires_at: queriedAt, close_reason: null,
+    shipping_company: '虚构速运', tracking_number: 'DEMO-COMPOSITE-001', shipped_at: queriedAt }
+  const bodies: Record<string, unknown>[] = []
+  await page.route('**/api/auth/me', route => route.fulfill({ json: { id: 'buyer', role: 'buyer' } }))
+  await page.route('**/api/customer-service/pages', route => route.fulfill({ status: 201, json: {
+    ...response('ok'), data: { page_instance_id: 'page-composite', consultation_id: 'consultation-composite' },
+  } }))
+  await page.route('**/api/customer-service/messages', async route => {
+    const body = route.request().postDataJSON()
+    bodies.push(body)
+    const compound = body.text === '快递未到且想退款'
+    const selection = body.selected_order_id
+    await route.fulfill({ json: { ...response(compound ? 'partial' : 'ok'),
+      ...(compound ? { code: 'policy_unavailable' } : {}), data: {
+        reply: compound ? '当前没有退款接口，未办理退款。不提供实时轨迹或预计送达时间。政策和检索服务暂不可用。' : '请选择订单',
+        cards: selection || compound ? [{ type: 'order_detail', order: detail }] : [{ type: 'order', order: {
+          order_number: orderNumber, created_at: queriedAt, product_summary: '测试商品 ×1', total: '129.00', status: 'pending_receipt',
+        } }], citations: [], ...(compound ? { parts: [
+          { source: 'get_my_order', status: 'ok', queried_at: queriedAt },
+          { source: 'search_policy', status: 'unavailable', code: 'policy_unavailable', queried_at: queriedAt },
+        ] } : {}),
+      } } })
+  })
+  await page.goto('/customer-service.html')
+  await page.getByRole('button', { name: '查询我的订单' }).click()
+  await page.getByRole('button', { name: /查询订单 .* 的详情/ }).click()
+  await page.getByLabel('请输入想咨询的问题').fill('快递未到且想退款')
+  await page.getByRole('button', { name: '发送', exact: true }).click()
+  const log = page.getByRole('log')
+  await expect(log).toContainText('未办理退款')
+  await expect(log).toContainText('运单号：DEMO-COMPOSITE-001')
+  await expect(log).toContainText('订单详情：已核验')
+  await expect(log).toContainText('政策检索：暂不可用')
+  expect(bodies.at(-1)).toMatchObject({ text: '快递未到且想退款' })
+  expect(bodies.at(-1)).not.toHaveProperty('selected_order_id')
+  await expect(page.getByRole('button', { name: '确认取消订单', exact: true })).toHaveCount(0)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+})
+
 test('buyer confirmation cancels a pending order and verifies its execution evidence', async ({ page }) => {
   const orderNumber = '11111111-1111-4111-8111-111111111111'
   const otherOrderNumber = '44444444-4444-4444-8444-444444444444'

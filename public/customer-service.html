@@ -132,7 +132,7 @@
       <div class="messages" id="messages" role="log" aria-label="客服聊天记录" aria-live="polite">
         <button class="history" type="button">点击查看历史咨询记录</button>
         <div class="message"><span class="avatar" aria-hidden="true">👩🏻‍💼</span><div class="bubble">亲，我是智能小蜜，很高兴为您服务！</div></div>
-        <div class="message"><span class="avatar" aria-hidden="true">👩🏻‍💼</span><div class="bubble">访客可匿名查询虚构演示商品。登录买家可查询本人订单及商城已保存的物流信息；即使只有一单，也需要您亲自选择。匿名会话自建立起30分钟有效。可问“有哪些商品？”或完整商品名称加“多少钱”“有货吗”“价格和库存”；也可咨询标注为“虚构演示政策（非真实商城政策）”的合成规则，例如“演示商城多久发货？”。退款、发券、催发货、转人工和实时轨迹暂不支持。</div></div>
+        <div class="message"><span class="avatar" aria-hidden="true">👩🏻‍💼</span><div class="bubble">访客可匿名查询虚构演示商品。登录买家可查询本人订单及商城已保存的物流信息；即使只有一单，也需要您亲自选择。选单后可问“快递未到且想退款”，查询已保存物流并了解实际可办理范围；也可用分号组合完整的商品、演示政策及订单问题。匿名会话自建立起30分钟有效。可问“有哪些商品？”或完整商品名称加“多少钱”“有货吗”“价格和库存”；也可咨询标注为“虚构演示政策（非真实商城政策）”的合成规则，例如“演示商城多久发货？”。退款、发券、催发货、转人工和实时轨迹暂不支持。</div></div>
         <div class="quick-questions" aria-label="热门咨询">
           <button class="quick-question" id="start-consultation" type="button">开始商品咨询<span class="chevron" aria-hidden="true"></span></button>
           <button class="quick-question" id="list-products" type="button">查看演示商品<span class="chevron" aria-hidden="true"></span></button>
@@ -465,6 +465,17 @@
         if (!result) return;
         if (!result.data || typeof result.data.reply !== 'string' || !Array.isArray(result.data.cards)) throw new Error('Invalid consultation');
         appendMessage(`${result.data.reply}\n查询时间：${result.queried_at}\n请求标识：${result.request_id}`);
+        if (result.data.parts !== undefined) {
+          if (!Array.isArray(result.data.parts) || result.data.parts.length > 7) throw new Error('Invalid consultation sources');
+          const labels = { get_my_order: '订单详情', list_my_orders: '订单候选', search_policy: '政策检索',
+            list_products: '商品列表', get_product: '商品详情', propose_cancel: '取消方案', composition: '组合咨询' };
+          const statuses = { ok: '已核验', empty: '未找到匹配依据或记录', unavailable: '暂不可用', proposed: '待您确认' };
+          for (const part of result.data.parts) {
+            if (!Object.hasOwn(labels, part.source) || !Object.hasOwn(statuses, part.status)
+                || typeof part.queried_at !== 'string' || !Number.isFinite(Date.parse(part.queried_at))) throw new Error('Invalid consultation source');
+            appendMessage(`${labels[part.source]}：${statuses[part.status]}\n查询时间：${part.queried_at}`);
+          }
+        }
         if (result.data.synthetic === true) {
           if (typeof result.data.policy_notice !== 'string' || result.data.policy_notice !== '虚构演示政策（非真实商城政策）') throw new Error('Invalid policy notice');
           appendMessage(result.data.policy_notice);

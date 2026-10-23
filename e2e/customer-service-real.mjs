@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import path from 'node:path'
 import { chromium } from '@playwright/test'
 
 const origin = process.env.SHOP_BROWSER_TEST_ORIGIN
@@ -9,6 +10,10 @@ const password = process.env.SHOP_BROWSER_TEST_PASSWORD
 const orderId = process.env.SHOP_BROWSER_TEST_ORDER_ID
 const cancelOrderId = process.env.SHOP_BROWSER_TEST_CANCEL_ORDER_ID
 const reconcileOrderId = process.env.SHOP_BROWSER_TEST_RECONCILE_ORDER_ID
+const compositeOrderIds = JSON.parse(process.env.SHOP_BROWSER_TEST_COMPOSITE_ORDER_IDS ?? '[]')
+const artifactDirectory = process.env.SHOP_BROWSER_TEST_ARTIFACT_DIRECTORY
+assert.ok(artifactDirectory && path.isAbsolute(artifactDirectory))
+assert.ok(compositeOrderIds.length === 2 && compositeOrderIds.every(id => /^[0-9a-f-]{36}$/.test(id)))
 assert.ok(email && email2 && password && /^[0-9a-f-]{36}$/.test(orderId ?? '')
   && /^[0-9a-f-]{36}$/.test(cancelOrderId ?? '')
   && /^[0-9a-f-]{36}$/.test(reconcileOrderId ?? ''))
@@ -53,7 +58,7 @@ try {
     await page.waitForFunction(() => document.querySelector('[role="log"]').textContent.includes('非商城政策'))
     assert.ok(!(await log.textContent()).includes('PRIVATE_RESEARCH_SENTINEL'))
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
-    await page.screenshot({ path: `/tmp/shop-phase-b-${label}.png`, fullPage: true })
+    await page.screenshot({ path: path.join(artifactDirectory, `shop-phase-b-${label}.png`), fullPage: true })
     const unknown = await ask('PRIVATE_SENTINEL，春日轻盈针织开衫多少钱？')
     assert.equal(unknown.result.status, 'needs_clarification')
     assert.deepEqual(unknown.result.data.cards, [])
@@ -88,9 +93,9 @@ try {
   assert.equal(response.status(), 200)
   const listing = await response.json()
   assert.equal(listing.status, 'ok')
-  assert.equal(listing.data.cards.length, 3)
+  assert.equal(listing.data.cards.length, 5)
   assert.deepEqual(listing.data.cards.map(card => card.order.order_number).sort(),
-    [orderId, cancelOrderId, reconcileOrderId].sort())
+    [orderId, cancelOrderId, reconcileOrderId, ...compositeOrderIds].sort())
   for (const card of listing.data.cards) {
     assert.deepEqual(Object.keys(card.order).sort(), ['created_at', 'order_number', 'product_summary', 'status', 'total'])
     assert.equal(card.order.total, '129.00')
@@ -221,7 +226,7 @@ try {
   response = await pending
   assert.equal(response.status(), 200)
   const afterHandoff = await response.json()
-  assert.equal(afterHandoff.data.cards.length, 3)
+  assert.equal(afterHandoff.data.cards.length, 5)
   assert.equal('confirmation_card' in afterHandoff, false)
 
   pending = ownerPage.waitForResponse(item => new URL(item.url()).pathname.endsWith('/messages'))
@@ -311,6 +316,83 @@ try {
   text = await ownerPage.getByRole('log').textContent()
   assert.ok(!text.includes(orderId))
   await ownerContext.close()
+  for (const [index, [label, viewport]] of [['desktop', { width: 1440, height: 1000 }], ['mobile', { width: 390, height: 844 }]].entries()) {
+    const context = await browser.newContext({ viewport })
+    const page = await context.newPage()
+    await login(page, email)
+    const log = page.getByRole('log')
+    async function ask(question) {
+      await page.getByLabel('请输入想咨询的问题').fill(question)
+      const pending = page.waitForResponse(item => new URL(item.url()).pathname.endsWith('/messages'))
+      await page.getByRole('button', { name: '发送', exact: true }).click()
+      const response = await pending
+      assert.equal(response.status(), 200)
+      return response.json()
+    }
+    async function choose(id) {
+      const pending = page.waitForResponse(item => new URL(item.url()).pathname.endsWith('/messages'))
+      await page.getByRole('button', { name: `查询订单 ${id.slice(0, 8)}… 的详情` }).last().click()
+      assert.equal((await pending).status(), 200)
+    }
+    await ask('查询我的订单')
+    await choose(orderId)
+    const delivery = await ask('快递未到且想退款')
+    assert.equal(delivery.status, 'ok')
+    assert.equal(delivery.data.cards[0].order.tracking_number, 'DEMO-BROWSER-001')
+    assert.equal('confirmation_card' in delivery, false)
+    for (const limitation of ['不提供实时轨迹或预计送达时间', '没有退款接口', '未办理退款', '不符合未支付订单取消条件']) {
+      assert.ok(delivery.data.reply.includes(limitation))
+    }
+    await page.waitForFunction(() => document.querySelector('[role="log"]').textContent.includes('未办理退款'))
+    assert.ok((await log.textContent()).includes('运单号：DEMO-BROWSER-001'))
+    const outageHeaders = { 'X-Test-Key': process.env.SHOP_BROWSER_TEST_CLOCK_KEY }
+    assert.equal((await context.request.post(`${origin}/__test/policy-outage?enabled=true`, { headers: outageHeaders })).status(), 200)
+    try {
+      const partial = await ask('演示商城多久发货？；查询我的订单')
+      assert.equal(partial.status, 'partial')
+      assert.equal(partial.code, 'policy_unavailable')
+      assert.equal(partial.data.cards[0].order.order_number, orderId)
+      assert.deepEqual(partial.data.citations, [])
+      await page.waitForFunction(() => document.querySelector('[role="log"]').textContent.includes('政策检索：暂不可用'))
+      assert.ok((await log.textContent()).includes('订单详情：已核验'))
+      const independent = await ask('查询我的订单')
+      assert.equal(independent.status, 'ok')
+      assert.equal(independent.data.cards[0].type, 'order')
+    } finally {
+      assert.equal((await context.request.post(`${origin}/__test/policy-outage?enabled=false`, { headers: outageHeaders })).status(), 200)
+    }
+    const pendingId = compositeOrderIds[index]
+    await choose(pendingId)
+    await page.waitForFunction(id => document.querySelector('[role="log"]').textContent.includes(`订单号：${id}`), pendingId)
+    const proposal = await ask('快递未到且想退款')
+    assert.equal(proposal.status, 'ok')
+    assert.equal(proposal.confirmation_card.order_number, pendingId)
+    const before = await context.request.get(`${origin}/api/orders/${pendingId}`)
+    assert.equal((await before.json()).status, 'pending_payment')
+    let confirmations = 0
+    await page.route('**/api/customer-service/cancel/confirm', async route => {
+      confirmations += 1
+      const committed = await route.fetch()
+      assert.equal(committed.status(), 200)
+      assert.equal((await committed.json()).status, 'executed')
+      await route.abort('connectionreset')
+    })
+    const reconciliation = page.waitForResponse(item => new URL(item.url()).pathname.endsWith('/cancel/reconcile'))
+    await page.locator('.confirmation-card').last().getByRole('button', { name: '确认取消订单', exact: true }).click()
+    const reconciled = await (await reconciliation).json()
+    assert.equal(reconciled.status, 'executed')
+    assert.equal(reconciled.data.operation_id, proposal.confirmation_card.operation_id)
+    assert.equal(confirmations, 1)
+    await page.waitForFunction(() => document.querySelector('[role="log"]').textContent.includes('取消成功：本人订单已关闭，原因是买家取消。'))
+    const after = await context.request.get(`${origin}/api/orders/${pendingId}`)
+    assert.equal((await after.json()).close_reason, 'buyer_cancelled')
+    const storage = await page.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } }))
+    assert.ok(!storage.includes(proposal.confirmation_card.confirmation_token))
+    assert.ok(!(await page.content()).includes(proposal.confirmation_card.confirmation_token))
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
+    await page.screenshot({ path: path.join(artifactDirectory, `ticket-9-composite-${label}.png`), fullPage: true })
+    await context.close()
+  }
   console.log('Chrome desktop/mobile anonymous sentences -> messages -> local MCP -> real fixture DB -> synthetic exchange + real ledger passed; unknown private text clarifies, duplicate reconciliation is stable, late confirmation is rejected, and the order stays pending after page reload. Cross-session pages denied. Real provider calls=0, money=0.')
 } finally {
   await browser.close()

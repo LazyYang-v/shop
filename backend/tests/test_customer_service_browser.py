@@ -53,6 +53,12 @@ def test_customer_service_browser_queries_real_isolated_catalog(client, tmp_path
                                json={'address_id': address['id']})
     assert cancel_order.status_code == 201
     cancel_order_id = cancel_order.json()['id']
+    assert client.post('/api/cart/items', headers=headers, json={
+        'product_id': '00000000-0000-0000-0000-000000000001', 'quantity': 1}).status_code == 201
+    reconcile_order = client.post('/api/orders', headers={**headers, 'Idempotency-Key': secrets.token_hex(16)},
+                                  json={'address_id': address['id']})
+    assert reconcile_order.status_code == 201
+    reconcile_order_id = reconcile_order.json()['id']
     from sqlalchemy import text as sql_text
     from datetime import timedelta
     with client.app.state.session_factory.begin() as db:
@@ -62,8 +68,9 @@ def test_customer_service_browser_queries_real_isolated_catalog(client, tmp_path
                    {'now': client.app.state.clock(), 'id': order_id})
         # Keep the unpaid order valid through browser confirmation; expiry is
         # exercised by the focused API tests with a controlled clock.
-        db.execute(sql_text("UPDATE orders SET expires_at=:expires WHERE id=:id"),
-                   {'expires': client.app.state.clock() + timedelta(minutes=10), 'id': cancel_order_id})
+        db.execute(sql_text("UPDATE orders SET expires_at=:expires WHERE id IN (:cancel_id, :reconcile_id)"),
+                   {'expires': client.app.state.clock() + timedelta(minutes=10),
+                    'cancel_id': cancel_order_id, 'reconcile_id': reconcile_order_id})
         # The synthetic catalog fixture fixes stock at 24; this seeded order is
         # display-only and must not make the verified fixture fail closed.
         db.execute(sql_text("UPDATE products SET stock=24 WHERE id='00000000-0000-0000-0000-000000000001'"))
@@ -129,6 +136,7 @@ def test_customer_service_browser_queries_real_isolated_catalog(client, tmp_path
             env.update(SHOP_BROWSER_TEST_ORIGIN=f'http://127.0.0.1:{port}', SHOP_BROWSER_TEST_EMAIL=emails[0], SHOP_BROWSER_TEST_PASSWORD=password,
                        SHOP_BROWSER_TEST_EMAIL_2=emails[1], SHOP_BROWSER_TEST_ORDER_ID=order_id,
                        SHOP_BROWSER_TEST_CANCEL_ORDER_ID=cancel_order_id,
+                       SHOP_BROWSER_TEST_RECONCILE_ORDER_ID=reconcile_order_id,
                        SHOP_BROWSER_TEST_CLOCK_KEY=test_clock_key)
             result = subprocess.run(['node', str(root / 'e2e/customer-service-real.mjs')], env=env, capture_output=True, text=True, timeout=45)
             assert result.returncode == 0, result.stdout + result.stderr

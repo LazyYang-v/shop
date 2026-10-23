@@ -8,8 +8,10 @@ const email2 = process.env.SHOP_BROWSER_TEST_EMAIL_2
 const password = process.env.SHOP_BROWSER_TEST_PASSWORD
 const orderId = process.env.SHOP_BROWSER_TEST_ORDER_ID
 const cancelOrderId = process.env.SHOP_BROWSER_TEST_CANCEL_ORDER_ID
+const reconcileOrderId = process.env.SHOP_BROWSER_TEST_RECONCILE_ORDER_ID
 assert.ok(email && email2 && password && /^[0-9a-f-]{36}$/.test(orderId ?? '')
-  && /^[0-9a-f-]{36}$/.test(cancelOrderId ?? ''))
+  && /^[0-9a-f-]{36}$/.test(cancelOrderId ?? '')
+  && /^[0-9a-f-]{36}$/.test(reconcileOrderId ?? ''))
 const browser = await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' })
 try {
   for (const [label, viewport] of [['desktop', { width: 1440, height: 1000 }], ['mobile', { width: 390, height: 844 }]]) {
@@ -86,8 +88,9 @@ try {
   assert.equal(response.status(), 200)
   const listing = await response.json()
   assert.equal(listing.status, 'ok')
-  assert.equal(listing.data.cards.length, 2)
-  assert.deepEqual(listing.data.cards.map(card => card.order.order_number).sort(), [orderId, cancelOrderId].sort())
+  assert.equal(listing.data.cards.length, 3)
+  assert.deepEqual(listing.data.cards.map(card => card.order.order_number).sort(),
+    [orderId, cancelOrderId, reconcileOrderId].sort())
   for (const card of listing.data.cards) {
     assert.deepEqual(Object.keys(card.order).sort(), ['created_at', 'order_number', 'product_summary', 'status', 'total'])
     assert.equal(card.order.total, '129.00')
@@ -169,8 +172,18 @@ try {
 
   let committedConfirmation
   let confirmationRequests = 0
+  let uncertainConfirmation
   await ownerPage.route('**/api/customer-service/cancel/confirm', async route => {
+    if (route.request().headers()['x-late-confirm-test'] === 'true') {
+      await route.continue()
+      return
+    }
     confirmationRequests += 1
+    if (confirmationRequests === 2) {
+      uncertainConfirmation = route.request().postDataJSON()
+      await route.fulfill({ status: 503, json: { status: 'unavailable', code: 'result_unknown', data: null } })
+      return
+    }
     committedConfirmation = await route.fetch()
     assert.equal(committedConfirmation.status(), 200)
     await route.abort('connectionreset')
@@ -208,8 +221,76 @@ try {
   response = await pending
   assert.equal(response.status(), 200)
   const afterHandoff = await response.json()
-  assert.equal(afterHandoff.data.cards.length, 2)
+  assert.equal(afterHandoff.data.cards.length, 3)
   assert.equal('confirmation_card' in afterHandoff, false)
+
+  pending = ownerPage.waitForResponse(item => new URL(item.url()).pathname.endsWith('/messages'))
+  await ownerPage.getByRole('button', { name: `查询订单 ${reconcileOrderId.slice(0, 8)}… 的详情` }).click()
+  response = await pending
+  assert.equal(response.status(), 200)
+  const reconcileDetail = await response.json()
+  assert.equal(reconcileDetail.data.cards[0].order.order_number, reconcileOrderId)
+  assert.equal(reconcileDetail.data.cards[0].order.status, 'pending_payment')
+  pending = ownerPage.waitForResponse(item => new URL(item.url()).pathname.endsWith('/messages'))
+  const reconcileProposalRequest = ownerPage.waitForRequest(item => {
+    const body = item.postDataJSON()
+    return new URL(item.url()).pathname.endsWith('/messages') && body.text === '申请取消订单'
+  })
+  await ownerPage.getByRole('button', { name: '申请取消订单' }).click()
+  response = await pending
+  assert.equal(response.status(), 200)
+  const reconcileProposal = await response.json()
+  const reconcileBinding = (await reconcileProposalRequest).postDataJSON()
+  const reconcileCard = reconcileProposal.confirmation_card
+  assert.equal(reconcileCard.order_number, reconcileOrderId)
+  const reconcileSection = ownerPage.locator('.confirmation-card').last()
+  const reconcileButton = reconcileSection.getByRole('button', { name: '确认取消订单' })
+  const unknownResponse = ownerPage.waitForResponse(item => new URL(item.url()).pathname.endsWith('/cancel/confirm'))
+  const reconcileResponseForUnknown = ownerPage.waitForResponse(item => new URL(item.url()).pathname.endsWith('/cancel/reconcile'))
+  await reconcileButton.click()
+  const unknownResult = await unknownResponse
+  assert.equal(unknownResult.status(), 503)
+  assert.equal((await unknownResult.json()).code, 'result_unknown')
+  assert.deepEqual(uncertainConfirmation, { page_instance_id: reconcileBinding.page_instance_id,
+    consultation_id: reconcileBinding.consultation_id, operation_id: reconcileCard.operation_id,
+    confirmation_token: reconcileCard.confirmation_token })
+  response = await reconcileResponseForUnknown
+  assert.equal(response.status(), 200)
+  const reconciledOperation = await response.json()
+  assert.equal(reconciledOperation.status, 'expired')
+  assert.equal(reconciledOperation.data.evidence.reason, 'reconciled_unknown_result')
+  await ownerPage.waitForFunction(id => document.querySelector('[role="log"]').textContent.includes('旧确认资格已撤销；操作编号：' + id), reconcileCard.operation_id)
+  assert.equal(confirmationRequests, 2)
+
+  const repeatCsrf = await ownerPage.evaluate(async () => fetch('/api/auth/csrf', { credentials: 'same-origin' }).then(result => result.json()))
+  const repeatedCheck = await ownerPage.evaluate(async ({ pageInstanceId, consultationId, operationId, csrfToken }) => {
+    const result = await fetch('/api/customer-service/cancel/reconcile', { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+      body: JSON.stringify({ page_instance_id: pageInstanceId, consultation_id: consultationId, operation_id: operationId }) })
+    return { status: result.status, body: await result.json() }
+  }, { pageInstanceId: reconcileBinding.page_instance_id, consultationId: reconcileBinding.consultation_id,
+    operationId: reconcileCard.operation_id, csrfToken: repeatCsrf.csrf_token })
+  assert.equal(repeatedCheck.status, 200)
+  assert.deepEqual(repeatedCheck.body.data, reconciledOperation.data)
+  const lateConfirm = await ownerPage.evaluate(async ({ pageInstanceId, consultationId, operationId, token }) => {
+    const csrf = await fetch('/api/auth/csrf', { credentials: 'same-origin' }).then(result => result.json())
+    const result = await fetch('/api/customer-service/cancel/confirm', { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf.csrf_token,
+        'X-Late-Confirm-Test': 'true' },
+      body: JSON.stringify({ page_instance_id: pageInstanceId, consultation_id: consultationId,
+        operation_id: operationId, confirmation_token: token }) })
+    return { status: result.status, body: await result.json() }
+  }, { pageInstanceId: reconcileBinding.page_instance_id, consultationId: reconcileBinding.consultation_id,
+    operationId: reconcileCard.operation_id, token: reconcileCard.confirmation_token })
+  assert.equal(lateConfirm.status, 409)
+  const reconcileOrder = await ownerPage.evaluate(async id => fetch(`/api/orders/${encodeURIComponent(id)}`,
+    { credentials: 'same-origin' }).then(result => result.json()), reconcileOrderId)
+  assert.equal(reconcileOrder.status, 'pending_payment')
+  await ownerPage.reload()
+  await ownerPage.waitForFunction(() => document.getElementById('account-status').textContent === '已登录买家')
+  const orderAfterReload = await ownerPage.evaluate(async id => fetch(`/api/orders/${encodeURIComponent(id)}`,
+    { credentials: 'same-origin' }).then(result => result.json()), reconcileOrderId)
+  assert.equal(orderAfterReload.status, 'pending_payment')
 
   await logout(ownerPage)
   pending = ownerPage.waitForResponse(item => new URL(item.url()).pathname.endsWith('/messages'))
@@ -230,7 +311,7 @@ try {
   text = await ownerPage.getByRole('log').textContent()
   assert.ok(!text.includes(orderId))
   await ownerContext.close()
-  console.log('Chrome desktop/mobile anonymous sentences -> messages -> local MCP -> real fixture DB -> synthetic exchange + real ledger passed; unknown private text clarifies, cross-session pages denied. Real provider calls=0, money=0.')
+  console.log('Chrome desktop/mobile anonymous sentences -> messages -> local MCP -> real fixture DB -> synthetic exchange + real ledger passed; unknown private text clarifies, duplicate reconciliation is stable, late confirmation is rejected, and the order stays pending after page reload. Cross-session pages denied. Real provider calls=0, money=0.')
 } finally {
   await browser.close()
 }

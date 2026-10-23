@@ -595,6 +595,99 @@ test('reconciliation stops polling when authentication expires', async ({ page }
   await expect(page.getByRole('log')).toContainText('无法核验取消结果；操作编号：' + operationId)
 })
 
+test('reconcile-first rejects a late browser confirmation and repeats the same evidence', async ({ page }) => {
+  await page.clock.install()
+  const orderNumber = '11111111-1111-4111-8111-111111111111'
+  const operationId = '77777777-7777-4777-8777-777777777777'
+  const token = 'f'.repeat(43)
+  const pageInstanceId = 'page-reconcile-first'
+  const consultationId = 'consultation-reconcile-first'
+  const evidence = { reason: 'reconciled_unknown_result', reconciled_at: '2026-10-23T12:00:00+00:00' }
+  const candidate = { order_number: orderNumber, created_at: '2026-10-23T09:00:00+00:00',
+    product_summary: '测试商品 ×1', total: '129.00', status: 'pending_payment' }
+  const detail = { order_number: orderNumber, status: 'pending_payment', total: '129.00',
+    product_summary: '测试商品 ×1', expires_at: '2026-10-23T09:30:00+00:00', close_reason: null,
+    shipping_company: null, tracking_number: null, shipped_at: null }
+  await page.route('**/api/customer-service/pages', route => route.fulfill({ status: 201, json: {
+    ...response('ok'), data: { page_instance_id: pageInstanceId, consultation_id: consultationId },
+  } }))
+  await page.route('**/api/customer-service/messages', async route => {
+    const body = route.request().postDataJSON()
+    if (body.text === '申请取消订单') {
+      await route.fulfill({ json: { ...response('ok'), data: { reply: '已生成取消确认方案。', cards: [], citations: [] },
+        confirmation_card: { operation_id: operationId, order_number: orderNumber, status: 'pending_payment',
+          product_summary: '测试商品 ×1', total: '129.00', currency: 'CNY',
+          expires_at: new Date(Date.now() + 120000).toISOString(), confirmation_token: token } } })
+    } else if (body.selected_order_id) {
+      await route.fulfill({ json: { ...response('ok'), data: { reply: '订单详情',
+        cards: [{ type: 'order_detail', order: detail }], citations: [] } } })
+    } else {
+      await route.fulfill({ json: { ...response('ok'), data: { reply: '订单列表',
+        cards: [{ type: 'order', order: candidate }], citations: [] } } })
+    }
+  })
+  const automaticConfirmBodies: Record<string, unknown>[] = []
+  let confirmRequests = 0
+  await page.route('**/api/customer-service/cancel/confirm', async route => {
+    confirmRequests += 1
+    if (confirmRequests === 1) {
+      automaticConfirmBodies.push(route.request().postDataJSON())
+      await route.fulfill({ status: 503, json: { ...response('result_unknown'), code: 'result_unknown', data: null } })
+      return
+    }
+    await route.fulfill({ status: 409, json: { ...response('error'), code: 'state_conflict', data: null } })
+  })
+  let reconcileCount = 0
+  await page.route('**/api/customer-service/cancel/reconcile', async route => {
+    reconcileCount += 1
+    await route.fulfill({ json: { ...response('expired'), status: 'expired', data: { operation_id: operationId, evidence } } })
+  })
+  await page.route(`**/api/orders/${orderNumber}`, route => route.fulfill({ json: {
+    id: orderNumber, status: 'pending_payment', close_reason: null, expires_at: detail.expires_at,
+  } }))
+
+  await page.goto('/customer-service.html')
+  const log = page.getByRole('log', { name: '客服聊天记录' })
+  await page.getByRole('button', { name: '查询我的订单' }).click()
+  await page.getByRole('button', { name: /查询订单 .* 的详情/ }).click()
+  await page.getByRole('button', { name: '申请取消订单', exact: true }).click()
+  await page.getByRole('button', { name: '确认取消订单', exact: true }).click()
+  await page.clock.fastForward(2250)
+  await expect.poll(() => reconcileCount).toBe(1)
+  await expect(log).toContainText('旧确认资格已撤销；操作编号：' + operationId)
+  expect(automaticConfirmBodies).toEqual([{ page_instance_id: pageInstanceId,
+    consultation_id: consultationId, operation_id: operationId, confirmation_token: token }])
+  await expect(log).not.toContainText('取消成功')
+  const orderAfterReconciliation = await page.evaluate(async id => fetch(`/api/orders/${encodeURIComponent(id)}`,
+    { credentials: 'same-origin' }).then(result => result.json()), orderNumber)
+  expect(orderAfterReconciliation).toMatchObject({ status: 'pending_payment', close_reason: null })
+
+  const late = await page.evaluate(async ({ pageInstanceId: pageId, consultationId: consultation,
+    operationId: operation, confirmationToken }) => {
+    const csrf = await fetch('/api/auth/csrf', { credentials: 'same-origin' }).then(result => result.json())
+    const result = await fetch('/api/customer-service/cancel/confirm', { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf.csrf_token },
+      body: JSON.stringify({ page_instance_id: pageId, consultation_id: consultation,
+        operation_id: operation, confirmation_token: confirmationToken }) })
+    return { status: result.status, body: await result.json() }
+  }, { pageInstanceId, consultationId, operationId, confirmationToken: token })
+  expect(late.status).toBe(409)
+  expect(confirmRequests).toBe(2)
+  expect(automaticConfirmBodies).toHaveLength(1)
+
+  const repeated = await page.evaluate(async ({ pageInstanceId: pageId, consultationId: consultation,
+    operationId: operation }) => {
+    const csrf = await fetch('/api/auth/csrf', { credentials: 'same-origin' }).then(result => result.json())
+    const result = await fetch('/api/customer-service/cancel/reconcile', { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf.csrf_token },
+      body: JSON.stringify({ page_instance_id: pageId, consultation_id: consultation, operation_id: operation }) })
+    return { status: result.status, body: await result.json() }
+  }, { pageInstanceId, consultationId, operationId })
+  expect(repeated.status).toBe(200)
+  expect(repeated.body.data).toEqual({ operation_id: operationId, evidence })
+  expect(reconcileCount).toBe(2)
+})
+
 test('expired cancellation card is marked unusable without execution', async ({ page }) => {
   const orderNumber = '11111111-1111-4111-8111-111111111111'
   const operationId = '55555555-5555-4555-8555-555555555555'

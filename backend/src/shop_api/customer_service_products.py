@@ -32,13 +32,7 @@ class GetProductArguments(BaseModel):
 
 
 class ProductTools:
-    tool_names = ('list_products', 'get_product')
     server_name = 'shop-products'
-
-    @staticmethod
-    def verify_result(name, result):
-        from shop_api.customer_service_product_mcp import verified_result
-        return verified_result(result, name)
 
     def __init__(self, session: Session, fixtures: Mapping[str, ProductFixture], request_id: str, clock: Callable[[], datetime], *, deadline=None):
         self._session = session

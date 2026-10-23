@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from datetime import timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -17,8 +18,8 @@ from test_customer_service_consultations import assert_error, message_payload, p
 PREFIX = "/api/customer-service"
 PRODUCT_ID = "00000000-0000-0000-0000-000000000001"
 ORDER_FIELDS = {"order_number", "created_at", "product_summary", "total", "status"}
-DETAIL_FIELDS = {"order_number", "created_at", "status", "total", "product_summary", "items",
-                 "expires_at", "close_reason", "shipping_company", "tracking_number", "shipped_at"}
+DETAIL_FIELDS = {"order_number", "status", "total", "product_summary", "expires_at",
+                 "close_reason", "shipping_company", "tracking_number", "shipped_at"}
 
 
 def clear_testserver_rate(client):
@@ -119,6 +120,11 @@ def test_zero_one_and_multiple_orders_require_explicit_selection(order_client):
     assert [card["type"] for card in selected.json()["data"]["cards"]] == ["order_detail"]
     assert selected.json()["data"]["cards"][0]["order"]["order_number"] == second
 
+    both = client.post(PREFIX + "/messages", json=message_payload(
+        created, text="查询我的订单", selected_order_id=first))
+    assert both.status_code == 200, both.text
+    assert both.json()["data"]["cards"][0]["order"]["order_number"] == first
+
 
 def test_order_number_filter_is_buyer_scoped_and_probe_limited(order_client):
     client = order_client
@@ -147,6 +153,9 @@ def test_order_number_filter_is_buyer_scoped_and_probe_limited(order_client):
     limited = client.post(PREFIX + "/messages", json=message_payload(created, text=f"订单号 {uuid4()}"))
     assert_error(limited, 429, "rate_limited")
     assert int(limited.headers["retry-after"]) >= 1
+    selected_probe = client.post(PREFIX + "/messages",
+                                 json=message_payload(created, text=None, selected_order_id=own))
+    assert_error(selected_probe, 429, "rate_limited")
 
 
 def test_order_detail_returns_only_trimmed_saved_facts(order_client):
@@ -166,7 +175,6 @@ def test_order_detail_returns_only_trimmed_saved_facts(order_client):
     assert detail["order_number"] == order_id
     assert detail["status"] == "pending_receipt"
     assert detail["total"] == "129.00"
-    assert detail["items"] == [{"name": "春日轻盈针织开衫", "quantity": 1}]
     assert detail["product_summary"] == "春日轻盈针织开衫 ×1"
     assert detail["shipping_company"] == "虚构速运"
     assert detail["tracking_number"] == "DEMO-TRACK-001"
@@ -176,6 +184,15 @@ def test_order_detail_returns_only_trimmed_saved_facts(order_client):
     for forbidden in ["PRIVATE_PHONE_SENTINEL", "PRIVATE_ADDRESS_SENTINEL", "13800138000",
                       "文三路", "预计送达", "实时轨迹", "recipient_name", "phone"]:
         assert forbidden not in response.text
+
+    with client.app.state.session_factory.begin() as db:
+        db.execute(update(Order).where(Order.id == UUID(order_id)).values(
+            status="closed", close_reason="buyer_cancelled"))
+    closed = client.post(PREFIX + "/messages",
+                         json=message_payload(created, text=None, selected_order_id=order_id))
+    assert closed.status_code == 200
+    assert closed.json()["data"]["cards"][0]["order"]["status"] == "closed"
+    assert closed.json()["data"]["cards"][0]["order"]["close_reason"] == "buyer_cancelled"
 
 
 def test_cross_buyer_selection_and_nonexistent_orders_are_uniformly_unavailable(order_client):
@@ -223,13 +240,44 @@ def test_invalid_session_logout_and_account_switch_invalidate_old_authorization(
     other.close()
 
 
+def test_expired_session_cannot_read_orders(order_client):
+    client = order_client
+    order_id = make_order(client)
+    created = page(client)
+    with client.app.state.session_factory.begin() as db:
+        page_record = db.get(ConsultationPage, UUID(created["page_instance_id"]))
+        session = db.get(AuthSession, page_record.session_id)
+        session.expires_at = client.app.state.clock() - timedelta(seconds=1)
+    response = client.post(PREFIX + "/messages", json=message_payload(created, text="我的订单"))
+    assert_error(response, 401, "authentication_required")
+    assert order_id not in response.text
+
+
+def test_order_word_in_policy_question_does_not_require_login(order_client):
+    from shop_api.customer_service_orders import looks_like_order_question
+    client = order_client
+    assert not looks_like_order_question("订单多久发货？")
+    assert looks_like_order_question("我的订单")
+    assert looks_like_order_question("订单号 11111111-1111-4111-8111-111111111111")
+    client.cookies.clear()
+    client.headers["X-CSRF-Token"] = client.get("/api/auth/csrf").json()["csrf_token"]
+    created = page(client)
+    response = client.post(PREFIX + "/messages", json=message_payload(created, text="订单多久发货？"))
+    assert response.status_code == 200
+    assert response.json()["status"] in {"needs_clarification", "empty", "unavailable"}
+
+
 def test_order_mcp_tool_schemas_dispatch_and_argument_validation(order_client):
+    from shop_api.customer_service import CustomerServiceUnavailable
     from shop_api.customer_service_product_mcp import CustomerServiceMCP, ProductMCPFailure
-    from shop_api.customer_service_orders import OrderTools
+    from shop_api.customer_service_orders import OrderTools, verify_order_result
     from shop_api.identity import User
 
     client = order_client
     order_id = make_order(client)
+    with pytest.raises(CustomerServiceUnavailable):
+        verify_order_result("get_my_order", {"request_id": str(uuid4()), "queried_at": "2026-10-23T09:00:00+00:00",
+                                             "status": "ok", "data": {"order_number": order_id, "extra": True}})
     with client.app.state.session_factory() as db:
         buyer = db.get(User, UUID(client.customer_service_buyer_id))
         mcp = CustomerServiceMCP(OrderTools(db, buyer, str(uuid4()), client.app.state.clock))

@@ -58,7 +58,7 @@ def test_anonymous_list_detail_and_consultation_expose_only_product_facts(consul
     assert client.get('/api/auth/me').status_code == 401
     for path in ['/api/orders', '/api/addresses', '/api/cart', '/api/admin/orders']:
         assert client.get(path).status_code == 401
-    assert_error(client.post(PREFIX + '/messages', json=message_payload(created, selected_order_id=str(uuid4()))), 422, 'invalid_input')
+    assert_error(client.post(PREFIX + '/messages', json=message_payload(created, selected_order_id=str(uuid4()))), 401, 'authentication_required')
     for key in ['user_id', 'identity', 'url', 'sql']:
         assert_error(client.get(PREFIX + '/products', params={key: 'forbidden'}), 422, 'invalid_input')
 
@@ -463,7 +463,7 @@ def test_session_and_consultation_binding(consultation_client):
 
 
 @pytest.mark.parametrize("changes", [{"text": "查看演示商品：" + str(uuid4())},
-                                      {"selected_product_id": PRODUCT_ID}, {"selected_order_id": str(uuid4())},
+                                      {"selected_product_id": PRODUCT_ID},
                                       {"text": None}, {"client_message_id": "not-a-uuid"}])
 def test_uncontrolled_inputs_and_unknown_fields_rejected(consultation_client, changes):
     client = consultation_client

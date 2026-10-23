@@ -18,10 +18,13 @@ from sqlalchemy.exc import DBAPIError
 from shop_api.customer_service import CustomerServiceUnavailable, QueryDeadlineExceeded
 from shop_api.customer_service_products import ListProductsArguments, GetProductArguments
 
-class ProductMCPFailure(CustomerServiceUnavailable):
+class CustomerServiceMCPFailure(CustomerServiceUnavailable):
     def __init__(self, code='mcp_unavailable'):
         self.code = code
         super().__init__(code)
+
+
+ProductMCPFailure = CustomerServiceMCPFailure
 
 
 VERSION = '2025-03-26'
@@ -39,7 +42,7 @@ class ProductFact(BaseModel):
     is_listed: bool
 
 
-def verified_result(result, name):
+def verified_result(name, result):
     if not isinstance(result, dict) or set(result) != {'request_id', 'queried_at', 'status', 'data'}:
         raise CustomerServiceUnavailable
     if name not in {'list_products', 'get_product'}:
@@ -120,7 +123,7 @@ def product_mcp_app(tools):
                         else 'mcp_unavailable')
             return JSONResponse({'jsonrpc': '2.0', 'id': identifier, 'error': {
                 'code': -32602 if category == 'invalid_input' else -32000,
-                'message': 'Product request unavailable', 'data': {'code': category}}})
+                'message': 'Customer service request unavailable', 'data': {'code': category}}})
     return app
 
 
@@ -128,7 +131,6 @@ class CustomerServiceMCP:
     """Private MCP client for whichever bounded tool set the caller supplies."""
 
     def __init__(self, tools, *, deadline=None, asgi_app=None):
-        self._tools = tools
         self._definitions = getattr(tools, 'tool_schemas', TOOLS)
         self._names = tuple(tool['name'] for tool in self._definitions)
         self._server_name = getattr(tools, 'server_name', 'shop-products')
@@ -151,7 +153,7 @@ class CustomerServiceMCP:
             allowed = {'invalid_input', 'resource_unavailable', 'mcp_timeout', 'mcp_unavailable'}
             if (isinstance(error, dict) and set(error) == {'code', 'message', 'data'}
                     and type(error['code']) is int and error['code'] in {-32602, -32000}
-                    and error['message'] == 'Product request unavailable' and isinstance(error['data'], dict)
+                    and error['message'] == 'Customer service request unavailable' and isinstance(error['data'], dict)
                     and set(error['data']) == {'code'} and error['data']['code'] in allowed):
                 raise ProductMCPFailure(error['data']['code'])
             raise ProductMCPFailure()

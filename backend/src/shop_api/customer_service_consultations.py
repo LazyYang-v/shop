@@ -191,6 +191,7 @@ def _order_turn(payload: MessageInput, request: Request, record: AuthSession, db
     """Deterministic order path; buyer identity comes only from the session."""
     from shop_api.customer_service_product_mcp import CustomerServiceMCP, ProductMCPFailure
 
+    started = time.monotonic()
     if record.kind != 'authenticated' or record.user_id is None:
         raise ConsultationError(401, 'authentication_required', '请登录后查看本人订单')
     try:
@@ -203,16 +204,14 @@ def _order_turn(payload: MessageInput, request: Request, record: AuthSession, db
         raise ConsultationError(error.status_code, code, message, error.headers) from None
     require_query_rate_limits(request)
     if payload.selected_order_id is not None:
+        _order_probe_rate(request, buyer)
         try:
             order_id = str(UUID(payload.selected_order_id))
         except ValueError:
             raise ConsultationError(422, 'invalid_input', '请求参数无效') from None
         name, arguments = 'get_my_order', {'order_id': order_id}
     else:
-        parsed = understand_order(payload.text or '')
-        if parsed is None:
-            raise ConsultationError(422, 'invalid_input', '请选择受支持的订单查询')
-        name, arguments = parsed
+        name, arguments = understand_order(payload.text or '') or ('clarify', {})
         if arguments.get('order_number') is not None:
             _order_probe_rate(request, buyer)
 
@@ -263,10 +262,15 @@ def _order_turn(payload: MessageInput, request: Request, record: AuthSession, db
     else:
         candidates = result['data']['items']
         cards = [{'type': 'order', 'order': item} for item in candidates]
-        reply, status = ('请选择要查询的订单', 'ok') if candidates else ('未找到可访问订单', 'empty')
+        if not candidates:
+            reply, status = '未找到可访问订单', 'empty'
+        elif result['data']['has_more']:
+            reply, status = '请选择要查询的订单；还有更多订单，请输入订单号进一步查询。', 'ok'
+        else:
+            reply, status = '请选择要查询的订单', 'ok'
     response = _envelope(request, status, {'reply': reply, 'cards': cards, 'citations': []})
     request.app.state.customer_service_log_writer.write(
-        request.state.customer_service_request_id, name, '', 0, len(cards), now)
+        request.state.customer_service_request_id, name, '', int((time.monotonic() - started) * 1000), len(cards), now)
     _store_response(db, key, response)
     page.last_used_at = consultation.last_used_at = now
     db.commit()
@@ -378,9 +382,9 @@ def build_consultation_router(session_dependency, current_session):
             page.last_used_at = now
             db.commit()
             return existing.response
-        if (payload.text is None) == (payload.selected_order_id is None):
-            raise ConsultationError(422, "invalid_input", "请选择受支持的商品查询")
-        if payload.selected_order_id is not None or looks_like_order_question(payload.text):
+        if payload.text is None and payload.selected_order_id is None:
+            raise ConsultationError(422, "invalid_input", "请选择受支持的服务查询")
+        if payload.selected_order_id is not None or looks_like_order_question(payload.text or ""):
             return _order_turn(payload, request, record, db, page, consultation, body_hash, key, deadline)
         require_query_rate_limits(request)
         intent = 'detail'

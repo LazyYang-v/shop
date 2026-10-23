@@ -309,8 +309,10 @@ test('order candidates require an explicit click before detail and never render 
     status: 'pending_receipt',
   }
   const detail = {
-    ...candidate,
-    items: [{ name: '测试商品', quantity: 1 }],
+    order_number: orderNumber,
+    status: 'pending_receipt',
+    total: '129.00',
+    product_summary: '测试商品 ×1',
     expires_at: '2026-10-23T09:30:00+00:00',
     close_reason: null,
     shipping_company: '虚构速运',

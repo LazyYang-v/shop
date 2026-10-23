@@ -22,10 +22,13 @@ from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
-from shop_api.customer_service import QueryDeadline
+from shop_api.customer_service import CustomerServiceUnavailable, QueryDeadline
 from shop_api.orders import Order, OrderItem
 
 ORDER_STATUSES = {"pending_payment", "pending_shipment", "pending_receipt", "completed", "closed"}
+_CANDIDATE_KEYS = {"order_number", "created_at", "product_summary", "total", "status"}
+_DETAIL_KEYS = {"order_number", "status", "total", "product_summary", "expires_at",
+                "close_reason", "shipping_company", "tracking_number", "shipped_at"}
 _CLOSE_REASONS = {None, "buyer_cancelled", "payment_timeout"}
 _ORDER_NUMBER = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 _MONEY = re.compile(r"^[0-9]+\.[0-9]{2}$")
@@ -90,11 +93,9 @@ def _candidate(order: Order, items: list[OrderItem]) -> dict:
 def _detail(order: Order, items: list[OrderItem]) -> dict:
     return {
         "order_number": str(order.id),
-        "created_at": order.created_at.isoformat(),
         "status": order.status,
         "total": str(order.total),
         "product_summary": _summary(items),
-        "items": [{"name": item.name, "quantity": item.quantity} for item in items],
         "expires_at": order.expires_at.isoformat(),
         "close_reason": order.close_reason,
         "shipping_company": order.shipping_company,
@@ -215,78 +216,70 @@ class OrderTools:
                 sqlstate = getattr(error.orig, "sqlstate", None)
                 if attempt or sqlstate not in {"40001", "40P01", "55P03", "57014"}:
                     raise
+                # A retry consumes the turn's two-call order budget.
+                self._calls += 1
         raise HTTPException(status_code=503, detail="订单查询暂不可用")
 
 
 def verify_order_result(name: str, result) -> dict:
     """Strict MCP response validation; rejects any extra field."""
     if not isinstance(result, dict) or set(result) != {"request_id", "queried_at", "status", "data"}:
-        raise ValueError
+        raise CustomerServiceUnavailable
     UUID(result["request_id"])
     if datetime.fromisoformat(result["queried_at"]).utcoffset() is None:
-        raise ValueError
+        raise CustomerServiceUnavailable
     data = result["data"]
     if name == "list_my_orders":
         if not isinstance(data, dict) or set(data) != {"items", "total", "page", "page_size", "has_more"}:
-            raise ValueError
+            raise CustomerServiceUnavailable
         if (type(data["items"]) is not list or len(data["items"]) > 20
                 or type(data["total"]) is not int or not 0 <= data["total"] <= 10_000
                 or type(data["page"]) is not int or not 1 <= data["page"] <= 100
                 or type(data["page_size"]) is not int or not 1 <= data["page_size"] <= 20
                 or type(data["has_more"]) is not bool
                 or result["status"] != ("ok" if data["items"] else "empty")):
-            raise ValueError
+            raise CustomerServiceUnavailable
         for item in data["items"]:
             _verify_candidate(item)
         return result
     if name == "get_my_order":
         if result["status"] != "ok":
-            raise ValueError
+            raise CustomerServiceUnavailable
         _verify_detail(data)
         return result
-    raise ValueError
+    raise CustomerServiceUnavailable
 
 
 def _verify_candidate(item) -> None:
-    if not isinstance(item, dict) or set(item) != {"order_number", "created_at", "product_summary", "total", "status"}:
-        raise ValueError
+    if not isinstance(item, dict) or set(item) != _CANDIDATE_KEYS:
+        raise CustomerServiceUnavailable
     if (not _ORDER_NUMBER.fullmatch(item["order_number"]) or item["status"] not in ORDER_STATUSES
             or not isinstance(item["product_summary"], str) or len(item["product_summary"]) > 300
             or not isinstance(item["total"], str) or not _MONEY.fullmatch(item["total"])):
-        raise ValueError
+        raise CustomerServiceUnavailable
     if datetime.fromisoformat(item["created_at"]).utcoffset() is None:
-        raise ValueError
+        raise CustomerServiceUnavailable
 
 
 def _verify_detail(data) -> None:
-    keys = {"order_number", "created_at", "status", "total", "product_summary", "items",
-            "expires_at", "close_reason", "shipping_company", "tracking_number", "shipped_at"}
-    if not isinstance(data, dict) or set(data) != keys:
-        raise ValueError
+    if not isinstance(data, dict) or set(data) != _DETAIL_KEYS:
+        raise CustomerServiceUnavailable
     if (not _ORDER_NUMBER.fullmatch(data["order_number"]) or data["status"] not in ORDER_STATUSES
             or not isinstance(data["total"], str) or not _MONEY.fullmatch(data["total"])
             or not isinstance(data["product_summary"], str) or len(data["product_summary"]) > 300
-            or data["close_reason"] not in _CLOSE_REASONS
-            or not isinstance(data["items"], list) or not 1 <= len(data["items"]) <= 20):
-        raise ValueError
-    for timestamp in (data["created_at"], data["expires_at"]):
-        if datetime.fromisoformat(timestamp).utcoffset() is None:
-            raise ValueError
+            or data["close_reason"] not in _CLOSE_REASONS):
+        raise CustomerServiceUnavailable
+    if datetime.fromisoformat(data["expires_at"]).utcoffset() is None:
+        raise CustomerServiceUnavailable
     if data["shipped_at"] is not None and datetime.fromisoformat(data["shipped_at"]).utcoffset() is None:
-        raise ValueError
-    for item in data["items"]:
-        if (not isinstance(item, dict) or set(item) != {"name", "quantity"}
-                or not isinstance(item["name"], str) or not 1 <= len(item["name"]) <= 160
-                or type(item["quantity"]) is not int or not 1 <= item["quantity"] <= 999):
-            raise ValueError
+        raise CustomerServiceUnavailable
     for field in ("shipping_company", "tracking_number"):
         if data[field] is not None and (not isinstance(data[field], str) or not 1 <= len(data[field]) <= 100):
-            raise ValueError
+            raise CustomerServiceUnavailable
 
 
-_ORDER_LIKE = re.compile(r"订单")
+_ORDER_LIKE = re.compile(r"我的订单|订单号|订单详情|订单列表|订单状态|查询订单|查看订单|看看订单|订单(?:是|为|：|:)\s*[A-Za-z0-9-]")
 _LIST = re.compile(r"(?:请问|请帮我|帮我)?(?:查看|查询|看看)?(?:我的)?订单(?:列表)?[？?。]?")
-_LIST_ONLY = re.compile(r"(?:请问|请帮我|帮我)?(?:查看|查询|看看)订单列表[？?。]?")
 _ORDER_NUMBER_TEXT = re.compile(
     r"(?:请问|请帮我|帮我)?(?:查询|查看|看看)?订单(?:号)?(?:是|为|：|:)?\s*([A-Za-z0-9-]{1,64})[？?。]?")
 _ORDER_DETAIL_TEXT = re.compile(r"(?:请问|请帮我|帮我)?(?:查询|查看|看看)订单详情[？?。]?")
@@ -299,7 +292,7 @@ def understand_order(text: str) -> tuple[str, dict] | None:
     request (clarify/login) from unrelated product or policy text.
     """
     sentence = "".join(text.split())
-    if _LIST.fullmatch(sentence) or _LIST_ONLY.fullmatch(sentence):
+    if _LIST.fullmatch(sentence):
         return "list_my_orders", {}
     number = _ORDER_NUMBER_TEXT.fullmatch(sentence)
     if number is not None:

@@ -21,7 +21,10 @@ from shop_api.customer_service import CustomerServiceUnavailable, QueryDeadline
 from shop_api.customer_service_cancel import (
     CANCEL_TRIGGER_TEXT,
     PROPOSAL_CARD_FIELDS,
+    CancelOperation,
     CancellationTools,
+    ConfirmCancelInput,
+    confirm_cancel,
     invalidate_pending_proposals,
     invalidate_pending_proposals_for_pages,
     replay_proposal_response,
@@ -191,6 +194,11 @@ def _store_response(db: Session, key: tuple, response: dict) -> None:
     if message is None:
         raise ConsultationError(425, 'processing', '已有请求结果未能确认')
     message.response = response
+
+
+def _cancel_confirm_rate(request: Request, buyer) -> None:
+    key = "cancel_confirm:" + hashlib.sha256(str(buyer.id).encode()).hexdigest()
+    _rate(request, key, 10)
 
 
 def _order_probe_rate(request: Request, buyer) -> None:
@@ -373,8 +381,7 @@ def _cancel_turn(payload: MessageInput, request: Request, record: AuthSession, d
     card['order_number'] = str(selected_order_id)
     card['confirmation_token'] = token
     response = _envelope(request, 'ok', {
-        'reply': '已生成取消确认方案；确认执行尚未开放。'
-                 '取消后将恢复商品库存，操作不可撤销，且购物车不会恢复。',
+        'reply': '已生成取消确认方案。取消后将恢复商品库存，操作不可撤销，且购物车不会恢复。',
         'cards': [], 'citations': []}, confirmation_card=card)
     request.app.state.customer_service_log_writer.write(
         request.state.customer_service_request_id, 'propose_cancel', '',
@@ -400,6 +407,82 @@ def build_consultation_router(session_dependency, current_session):
         if request.query_params:
             raise ConsultationError(422, "invalid_input", "请求参数无效")
         return record
+
+    @router.post("/cancel/confirm")
+    def confirm(payload: ConfirmCancelInput, request: Request, record: AuthSession = Depends(authorized),
+                db: Session = Depends(session_dependency)):
+        if record.kind != 'authenticated' or record.user_id is None:
+            raise ConsultationError(401, 'authentication_required', '需要登录')
+        now = request.app.state.clock()
+        _lock_session(db, record, now)
+        confirmation_deadline = QueryDeadline(3)
+        try:
+            buyer = require_demo_buyer(request, record, db)
+            page_id = UUID(payload.page_instance_id)
+            consultation_id = UUID(payload.consultation_id)
+            operation_id = UUID(payload.operation_id)
+        except ValueError:
+            raise ConsultationError(422, 'invalid_input', '请求参数无效') from None
+        except HTTPException as error:
+            code = 'authentication_required' if error.status_code == 401 else 'resource_unavailable'
+            raise ConsultationError(error.status_code, code, '未找到可访问的记录') from None
+        _cancel_confirm_rate(request, buyer)
+        page, consultation = _page(db, record, str(page_id), now)
+        confirmation_deadline.apply(db, maximum_seconds=1)
+        if consultation.id != consultation_id:
+            raise ConsultationError(403, 'resource_unavailable', '未找到可访问的记录')
+
+        try:
+            confirmation_deadline.check()
+            state, evidence = confirm_cancel(
+                db, buyer=buyer, session_id=record.id, page_id=page.id,
+                consultation_id=consultation.id, operation_id=operation_id,
+                token=payload.confirmation_token, clock=request.app.state.clock)
+        except HTTPException as error:
+            db.rollback()
+            code = 'resource_unavailable' if error.status_code == 403 else 'state_conflict'
+            message = '未找到可访问的记录' if error.status_code == 403 else '确认凭据无效或订单状态已变化'
+            raise ConsultationError(error.status_code, code, message) from None
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                return JSONResponse(status_code=503, content=_envelope(
+                    request, 'unavailable', {'operation_id': str(operation_id)},
+                    code='result_unknown', message='取消结果暂未确认，请查看订单状态'))
+            return _envelope(request, 'rolled_back', {'operation_id': str(operation_id)},
+                             code='transaction_rolled_back', message='取消事务已回滚，可在确认期限内重新确认')
+
+        try:
+            db.commit()
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            return JSONResponse(status_code=503, content=_envelope(
+                request, 'unavailable', {'operation_id': str(operation_id)},
+                code='result_unknown', message='取消结果暂未确认，请查看订单状态'))
+
+        if state == 'executed':
+            with request.app.state.session_factory() as verification_db:
+                order = verification_db.scalar(select(Order).where(
+                    Order.id == UUID(evidence['order_id']), Order.user_id == buyer.id))
+                operation = verification_db.get(CancelOperation, operation_id)
+            if (operation is None or operation.state != 'executed'
+                    or operation.buyer_id != buyer.id or operation.order_id != UUID(evidence['order_id'])
+                    or operation.evidence != evidence or order is None
+                    or evidence.get('status') != 'closed'
+                    or evidence.get('close_reason') != 'buyer_cancelled'
+                    or order.status != evidence.get('status')
+                    or order.close_reason != evidence.get('close_reason')):
+                return _envelope(request, 'unavailable', {'operation_id': str(operation_id)},
+                                 code='result_unavailable', message='取消结果暂无法核验')
+            return _envelope(request, 'executed', {
+                'operation_id': str(operation_id), 'order_id': str(order.id),
+                'order_status': order.status, 'close_reason': order.close_reason,
+                'evidence': evidence})
+        return _envelope(request, state, {'operation_id': str(operation_id), 'evidence': evidence})
 
     @router.post("/pages", status_code=201)
     def create_page(payload: PageInput, request: Request, record: AuthSession = Depends(authorized),

@@ -192,7 +192,7 @@
     let selectedOrderNumber = null;
     let consultationBusy = false;
     let renewalTimer = null;
-    const confirmationTimers = new Set();
+    const confirmationTimers = new Map();
     const handoffKey = 'shop.customer-service.handoff';
     function saveHandoff(token) {
       try {
@@ -226,7 +226,7 @@
       section.append(expired);
     }
     function expireConfirmationCards(note) {
-      for (const timer of confirmationTimers) clearTimeout(timer);
+      for (const timer of confirmationTimers.values()) clearTimeout(timer);
       confirmationTimers.clear();
       confirmation = null;
       messages.querySelectorAll('.confirmation-card').forEach(section => expireConfirmationCard(section, note));
@@ -242,10 +242,10 @@
         return;
       }
       const timer = setTimeout(() => {
-        confirmationTimers.delete(timer);
+        confirmationTimers.delete(card.operation_id);
         expire();
       }, deadline - Date.now());
-      confirmationTimers.add(timer);
+      confirmationTimers.set(card.operation_id, timer);
     }
     const accountStatus = document.getElementById('account-status');
     const loginButton = document.getElementById('login-button');
@@ -440,7 +440,7 @@
       return runConsultation({ text: '申请取消订单', selected_order_id: orderNumber });
     }
     async function runConsultation(messageFields) {
-      if (consultationBusy) return;
+      if (consultationBusy) return null;
       consultationBusy = true;
       try {
         if (!consultation) {
@@ -506,12 +506,16 @@
           const replay = result.code === 'card_unavailable';
           if (!validConfirmationCard(result.confirmation_card, replay)) throw new Error('Invalid confirmation card');
           if (!replay) expireConfirmationCards('已有新的取消确认方案，请使用最新方案。');
-          appendConfirmationCard(result.confirmation_card, replay);
+          const section = appendConfirmationCard(result.confirmation_card, replay);
           if (!replay) {
             // The plaintext credential lives only in page memory until expiry.
             confirmation = {
               operationId: result.confirmation_card.operation_id,
               token: result.confirmation_card.confirmation_token,
+              pageInstanceId: consultation.page_instance_id,
+              consultationId: consultation.consultation_id,
+              orderNumber: result.confirmation_card.order_number,
+              section,
             };
           }
         }
@@ -560,20 +564,126 @@
         replayNote.textContent = '确认凭据未随重发返回，请重新申请取消方案。';
         section.append(replayNote);
       } else {
-        const unavailable = document.createElement('p');
-        unavailable.className = 'unavailable';
-        unavailable.textContent = '确认执行尚未开放；本切片不会取消订单。';
-        section.append(unavailable);
+        const note = document.createElement('p');
+        note.className = 'unavailable';
+        note.textContent = '请核对订单与取消后果，再确认取消。';
+        section.append(note);
         const button = document.createElement('button');
         button.type = 'button';
-        button.disabled = true;
         button.dataset.confirmationAction = 'true';
-        button.textContent = '确认取消（尚未开放执行）';
+        button.textContent = '确认取消订单';
+        button.addEventListener('click', () => confirmCancellation(button));
         section.append(button);
         armConfirmationExpiry(section, card);
       }
       messages.append(section);
       messages.scrollTop = messages.scrollHeight;
+      return section;
+    }
+    async function confirmCancellation(button) {
+      const current = confirmation;
+      if (!current || button.disabled || consultationBusy) return;
+      button.disabled = true;
+      consultationBusy = true;
+      const pending = document.createElement('p');
+      pending.className = 'unavailable';
+      pending.textContent = '正在提交取消请求…';
+      current.section.append(pending);
+      let requestStarted = false;
+      try {
+        await withSessionLane(async () => {
+          const csrfResponse = await fetch('/api/auth/csrf', { credentials: 'same-origin', cache: 'no-store' });
+          if (!csrfResponse.ok) throw new Error('credentials_unavailable');
+          const csrf = await csrfResponse.json();
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 10000);
+          requestStarted = true;
+          let response;
+          try {
+            response = await fetch('/api/customer-service/cancel/confirm', {
+              method: 'POST', credentials: 'same-origin', cache: 'no-store',
+              headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf.csrf_token },
+              body: JSON.stringify({ page_instance_id: current.pageInstanceId,
+                consultation_id: current.consultationId, operation_id: current.operationId,
+                confirmation_token: current.token }), signal: controller.signal,
+            });
+          } finally { clearTimeout(timer); }
+          let result;
+          try { result = await response.json(); } catch { throw new Error('response_unknown'); }
+          if (response.status === 401) {
+            expireConfirmationCards('登录状态已失效；请登录后查看订单。');
+            showLogin();
+            appendMessage('取消结果未确认，请重新登录后查看订单；未自动重发请求。');
+            return;
+          }
+          if (response.status === 403) {
+            expireConfirmationCards('当前会话无法使用此确认方案。');
+            appendMessage('取消方案无法在当前会话使用。');
+            return;
+          }
+          if (response.status === 409) {
+            confirmation = null;
+            clearTimeoutForConfirmation(current.operationId);
+            expireConfirmationCard(current.section, '响应未能确认；请查看订单状态，不要重复点击。');
+            appendMessage(`取消结果待核验，操作编号：${current.operationId}。请查看本人订单；本页面不会自动重发取消。`);
+            return;
+          }
+          if (!response.ok || !result || typeof result.status !== 'string') throw new Error('response_unknown');
+          if (result.status === 'executed' && result.data?.operation_id === current.operationId
+              && result.data?.order_id === current.orderNumber
+              && result.data?.order_status === 'closed' && result.data?.close_reason === 'buyer_cancelled'
+              && result.data?.evidence?.order_id === current.orderNumber
+              && result.data?.evidence?.close_reason === 'buyer_cancelled') {
+            clearTimeoutForConfirmation(current.operationId);
+            confirmation = null;
+            const orderResponse = await fetch(`/api/orders/${encodeURIComponent(current.orderNumber)}`, {
+              credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(3000),
+            });
+            if (!orderResponse.ok) throw new Error('order_verification_unavailable');
+            const verified = await orderResponse.json();
+            if (verified?.id === current.orderNumber && verified.status === 'closed'
+                && verified.close_reason === 'buyer_cancelled'
+                && result.data.evidence.status === verified.status
+                && result.data.evidence.close_reason === verified.close_reason) {
+              expireConfirmationCard(current.section, '本次取消已由商城订单与操作证据确认。');
+              pending.textContent = '取消成功：本人订单已关闭，原因是买家取消。';
+            } else {
+              pending.textContent = `已收到执行证据，但当前订单状态尚未一致；操作编号：${current.operationId}。请稍后查看订单。`;
+            }
+            return;
+          }
+          if (result.status === 'rolled_back' && result.code === 'transaction_rolled_back') {
+            button.disabled = false;
+            pending.textContent = '取消事务已明确回滚；订单未改变。你可以在确认期限内再次点击确认。';
+            return;
+          }
+          if (result.status === 'rejected' || result.status === 'expired') {
+            expireConfirmationCard(current.section, result.status === 'expired'
+              ? '取消方案已失效，请重新查询订单。' : '订单当前状态不满足取消条件。');
+            pending.textContent = result.status === 'expired' ? '取消方案已失效，订单未由本次操作取消。'
+              : '取消未执行，订单状态或付款期限已变化。';
+            return;
+          }
+          throw new Error('response_unknown');
+        });
+      } catch {
+        if (requestStarted) {
+          confirmation = null;
+          clearTimeoutForConfirmation(current.operationId);
+          expireConfirmationCard(current.section, '响应未能确认；请查看订单状态，不要重复点击。');
+          pending.textContent = `取消结果待核验，操作编号：${current.operationId}。请查看本人订单；本页面不会自动重发取消。`;
+        } else {
+          button.disabled = false;
+          pending.textContent = '请求尚未发送，请检查登录状态后重试。';
+        }
+      } finally {
+        consultationBusy = false;
+      }
+    }
+    function clearTimeoutForConfirmation(operationId) {
+      const timer = confirmationTimers.get(operationId);
+      if (timer) clearTimeout(timer);
+      confirmationTimers.delete(operationId);
     }
     document.getElementById('start-consultation').addEventListener('click', () => consultText());
     document.getElementById('query-orders').addEventListener('click', () => consultText('查询我的订单'));

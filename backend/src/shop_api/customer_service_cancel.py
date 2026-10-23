@@ -1,9 +1,9 @@
-"""Cancellation proposals: explicit selection, one-time credentials, expiry.
+"""Cancellation confirmation proposals, atomic execution, and evidence.
 
-This slice deliberately has no execution path. A proposal records an operation
-and returns a confirmation card; the order, stock and close reason never change.
-The plaintext credential leaves only through an in-process side channel on the
-tool instance and never enters the MCP result, chat response, logs or storage.
+Proposals return a confirmation card without changing the order. Confirmation
+uses a separate browser endpoint and the shared order-cancellation rules. The
+plaintext credential leaves the proposal tool only through an in-process side
+channel and never enters MCP results, chat responses, logs, or storage.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from shop_api.customer_service import CustomerServiceUnavailable, QueryDeadline
 from shop_api.database import Base
-from shop_api.orders import Order, OrderItem
+from shop_api.orders import Order, OrderItem, cancel_order, read_order
 
 CANCEL_TRIGGER_TEXT = "申请取消订单"
 CONFIRMATION_TTL_SECONDS = 120
@@ -59,6 +59,15 @@ class CancelOperation(Base):
     evidence: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
+class ConfirmCancelInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    page_instance_id: str = Field(max_length=128)
+    consultation_id: str = Field(max_length=128)
+    operation_id: str = Field(max_length=128)
+    confirmation_token: str = Field(max_length=128, pattern=r"^[A-Za-z0-9_-]{43}$")
+
+
 class ProposeCancelArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -71,6 +80,70 @@ PROPOSE_CANCEL_SCHEMA = {
     "required": ["order_id"],
 }
 CANCEL_TOOL_SCHEMAS = [{"name": "propose_cancel", "inputSchema": PROPOSE_CANCEL_SCHEMA}]
+
+
+def confirm_cancel(session: Session, *, buyer, session_id: UUID, page_id: UUID,
+                   consultation_id: UUID, operation_id: UUID, token: str,
+                   clock: Callable[[], datetime]) -> tuple[str, dict]:
+    """Lock and execute one operation inside the caller-owned transaction."""
+    operation = session.scalar(select(CancelOperation).where(
+        CancelOperation.id == operation_id).with_for_update())
+    if (operation is None or operation.buyer_id != buyer.id or operation.session_id != session_id
+            or operation.page_id != page_id or operation.consultation_id != consultation_id
+            or operation.action != CANCEL_ACTION):
+        raise HTTPException(status_code=403, detail="未找到可访问的记录")
+
+    if operation.state == EXECUTED:
+        return EXECUTED, operation.evidence or {}
+    if operation.state != PENDING:
+        raise HTTPException(status_code=409, detail="确认凭据无效或已过期")
+
+    token_hash = hashlib.sha256(token.encode()).digest()
+    if operation.credential_hash is None or not secrets.compare_digest(operation.credential_hash, token_hash):
+        raise HTTPException(status_code=409, detail="确认凭据无效或已过期")
+
+    now = clock()
+    if operation.expires_at <= now:
+        operation.state = EXPIRED
+        operation.credential_hash = None
+        operation.terminal_at = now
+        operation.evidence = {"reason": "credential_expired", "expired_at": now.isoformat()}
+        return EXPIRED, operation.evidence
+
+    consumed = session.execute(update(CancelOperation).where(
+        CancelOperation.id == operation.id,
+        CancelOperation.state == PENDING,
+        CancelOperation.credential_hash == token_hash,
+        CancelOperation.expires_at > now,
+    ).values(state=REJECTED, credential_hash=None, terminal_at=now))
+    if consumed.rowcount != 1:
+        raise HTTPException(status_code=409, detail="确认凭据无效或已过期")
+    operation.state = REJECTED
+    operation.credential_hash = None
+    operation.terminal_at = now
+
+    order = session.scalar(select(Order).where(
+        Order.id == operation.order_id).with_for_update())
+    now = clock()
+    if order is None or order.user_id != buyer.id:
+        operation.evidence = {"reason": "order_unavailable"}
+        return REJECTED, operation.evidence
+    if order.status != "pending_payment":
+        operation.evidence = {"reason": "order_state_changed", "order_status": order.status,
+                              "close_reason": order.close_reason}
+        return REJECTED, operation.evidence
+    if order.expires_at <= now:
+        operation.evidence = {"reason": "payment_deadline_passed", "order_status": order.status}
+        return REJECTED, operation.evidence
+
+    # cancel_order re-locks and revalidates under the same transaction, without
+    # committing. Any downstream error rolls back credential, evidence, order and stock.
+    cancel_order(session, buyer, order.id, now=now)
+    final = read_order(session, order)
+    operation.state = EXECUTED
+    operation.evidence = {"order_id": str(order.id), "status": final.status,
+                          "close_reason": final.close_reason, "executed_at": now.isoformat()}
+    return EXECUTED, operation.evidence
 
 
 def invalidate_pending_proposals(session: Session, page_id: UUID, now: datetime) -> None:

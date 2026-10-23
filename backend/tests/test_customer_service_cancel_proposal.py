@@ -1,8 +1,4 @@
-"""Cancellation proposals: selection, one-time credentials and expiry.
-
-Only isolated PostgreSQL fixtures; the frozen proposal slice never changes an
-order or stock and never executes a cancellation.
-"""
+"""Cancellation proposals, confirmations, and evidence over PostgreSQL."""
 
 import hashlib
 import json
@@ -96,6 +92,340 @@ def propose(client, created, order_id=None, *, client_message_id=None):
     if client_message_id is not None:
         payload["client_message_id"] = client_message_id
     return client.post(PREFIX + "/messages", json=payload)
+
+
+def test_confirmation_retry_returns_evidence_without_double_stock_restore(cancel_client):
+    client = cancel_client
+    order_id = make_order(client)
+    created = page(client)
+    card = propose(client, created, order_id).json()["confirmation_card"]
+    payload = {"page_instance_id": created["page_instance_id"],
+               "consultation_id": created["consultation_id"],
+               "operation_id": card["operation_id"],
+               "confirmation_token": card["confirmation_token"]}
+
+    first = client.post(PREFIX + "/cancel/confirm", json=payload)
+    second = client.post(PREFIX + "/cancel/confirm", json=payload)
+    invalid_replay = client.post(PREFIX + "/cancel/confirm", json={**payload, "confirmation_token": "z" * 43})
+
+    assert first.status_code == 200 and first.json()["status"] == "executed"
+    assert first.json()["data"]["evidence"]["close_reason"] == "buyer_cancelled"
+    assert second.status_code == 200 and second.json()["status"] == "executed"
+    assert second.json()["data"] == first.json()["data"]
+    assert invalid_replay.status_code == 200 and invalid_replay.json()["data"] == first.json()["data"]
+    with client.app.state.session_factory() as db:
+        order = db.get(Order, UUID(order_id))
+        operation = db.get(CancelOperation, UUID(card["operation_id"]))
+        stock = db.scalar(text("SELECT stock FROM products WHERE id=:id"), {"id": PRODUCT_ID})
+        assert order.status == "closed" and order.close_reason == "buyer_cancelled"
+        assert operation.state == "executed" and operation.credential_hash is None
+        assert stock == 24
+
+
+def test_concurrent_confirmation_requests_cancel_once(cancel_client):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    client = cancel_client
+    order_id = make_order(client)
+    created = page(client)
+    card = propose(client, created, order_id).json()["confirmation_card"]
+    payload = {"page_instance_id": created["page_instance_id"],
+               "consultation_id": created["consultation_id"],
+               "operation_id": card["operation_id"],
+               "confirmation_token": card["confirmation_token"]}
+    second_client = client.__class__(client.app)
+    second_client.cookies.update(client.cookies)
+    second_client.headers.update(client.headers)
+    barrier = Barrier(2)
+
+    def confirm(target):
+        barrier.wait()
+        return target.post(PREFIX + "/cancel/confirm", json=payload)
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        responses = list(workers.map(confirm, (client, second_client)))
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert all(response.json().get("status") == "executed" for response in responses)
+    assert responses[0].json()["data"] == responses[1].json()["data"]
+    with client.app.state.session_factory() as db:
+        order = db.get(Order, UUID(order_id))
+        operation = db.get(CancelOperation, UUID(card["operation_id"]))
+        stock = db.scalar(text("SELECT stock FROM products WHERE id=:id"), {"id": PRODUCT_ID})
+        assert order.status == "closed" and order.close_reason == "buyer_cancelled"
+        assert operation.state == "executed"
+        assert stock == 24
+
+
+def test_invalid_confirmation_token_does_not_consume_or_change_order(cancel_client):
+    client = cancel_client
+    order_id = make_order(client)
+    created = page(client)
+    card = propose(client, created, order_id).json()["confirmation_card"]
+    response = client.post(PREFIX + "/cancel/confirm", json={
+        "page_instance_id": created["page_instance_id"], "consultation_id": created["consultation_id"],
+        "operation_id": card["operation_id"], "confirmation_token": "x" * 43,
+    })
+    assert response.status_code == 409
+    with client.app.state.session_factory() as db:
+        operation = db.get(CancelOperation, UUID(card["operation_id"]))
+        order = db.get(Order, UUID(order_id))
+        assert operation.state == "pending" and operation.credential_hash is not None
+        assert order.status == "pending_payment"
+
+
+def test_rejection_consumes_token_with_evidence_when_order_state_changes(cancel_client):
+    client = cancel_client
+    order_id = make_order(client)
+    created = page(client)
+    card = propose(client, created, order_id).json()["confirmation_card"]
+    with client.app.state.session_factory.begin() as db:
+        db.execute(update(Order).where(Order.id == UUID(order_id)).values(status="pending_shipment"))
+    response = client.post(PREFIX + "/cancel/confirm", json={
+        "page_instance_id": created["page_instance_id"], "consultation_id": created["consultation_id"],
+        "operation_id": card["operation_id"], "confirmation_token": card["confirmation_token"],
+    })
+    assert response.status_code == 200 and response.json()["status"] == "rejected"
+    with client.app.state.session_factory() as db:
+        operation = db.get(CancelOperation, UUID(card["operation_id"]))
+        order = db.get(Order, UUID(order_id))
+        assert operation.state == "rejected" and operation.credential_hash is None
+        assert operation.evidence["reason"] == "order_state_changed"
+        assert order.status == "pending_shipment"
+
+
+def test_confirmation_rolls_back_operation_order_and_stock_on_domain_failure(cancel_client, monkeypatch):
+    import shop_api.customer_service_cancel as cancellation
+
+    client = cancel_client
+    order_id = make_order(client)
+    created = page(client)
+    card = propose(client, created, order_id).json()["confirmation_card"]
+    def fail_after_stock_write(*args, **kwargs):
+        from sqlalchemy import update as sql_update
+        args[0].execute(sql_update(Order).where(Order.id == UUID(order_id)).values(status="closed"))
+        raise RuntimeError("injected order transition failure")
+    monkeypatch.setattr(cancellation, "cancel_order", fail_after_stock_write)
+    response = client.post(PREFIX + "/cancel/confirm", json={
+        "page_instance_id": created["page_instance_id"], "consultation_id": created["consultation_id"],
+        "operation_id": card["operation_id"], "confirmation_token": card["confirmation_token"],
+    })
+    assert response.status_code == 200
+    assert response.json()["status"] == "rolled_back"
+    assert response.json()["code"] == "transaction_rolled_back"
+    with client.app.state.session_factory() as db:
+        operation = db.get(CancelOperation, UUID(card["operation_id"]))
+        order = db.get(Order, UUID(order_id))
+        stock = db.scalar(text("SELECT stock FROM products WHERE id=:id"), {"id": PRODUCT_ID})
+        assert operation.state == "pending" and operation.credential_hash is not None
+        assert order.status == "pending_payment" and order.close_reason is None
+        assert stock == 23
+
+
+def test_confirmation_commit_failure_returns_unknown_result_and_rolls_back(cancel_client):
+    from sqlalchemy import event
+    from sqlalchemy.orm import Session as OrmSession
+
+    client = cancel_client
+    order_id = make_order(client)
+    created = page(client)
+    card = propose(client, created, order_id).json()["confirmation_card"]
+    fired = False
+
+    def fail_commit(session):
+        nonlocal fired
+        fired = True
+        raise RuntimeError("injected commit failure")
+
+    event.listen(OrmSession, "before_commit", fail_commit)
+    client.app.state.customer_service_limiter.allow = lambda *args, **kwargs: (True, 0)
+    try:
+        response = client.post(PREFIX + "/cancel/confirm", json={
+            "page_instance_id": created["page_instance_id"], "consultation_id": created["consultation_id"],
+            "operation_id": card["operation_id"], "confirmation_token": card["confirmation_token"]})
+    finally:
+        event.remove(OrmSession, "before_commit", fail_commit)
+
+    assert fired
+    assert response.status_code == 503 and response.json()["code"] == "result_unknown"
+    with client.app.state.session_factory() as db:
+        operation = db.get(CancelOperation, UUID(card["operation_id"]))
+        order = db.get(Order, UUID(order_id))
+        stock = db.scalar(text("SELECT stock FROM products WHERE id=:id"), {"id": PRODUCT_ID})
+        assert operation.state == "pending" and operation.credential_hash is not None
+        assert order.status == "pending_payment" and order.close_reason is None
+        assert stock == 23
+
+
+def test_confirmation_rejects_a_replayed_token_without_affecting_another_order(cancel_client):
+    client = cancel_client
+    first_order_id = make_order(client)
+    second_order_id = make_order(client)
+    created = page(client)
+    first_card = propose(client, created, first_order_id).json()["confirmation_card"]
+    first_payload = {"page_instance_id": created["page_instance_id"],
+                     "consultation_id": created["consultation_id"],
+                     "operation_id": first_card["operation_id"],
+                     "confirmation_token": first_card["confirmation_token"]}
+    assert client.post(PREFIX + "/cancel/confirm", json=first_payload).json()["status"] == "executed"
+
+    second_card = propose(client, created, second_order_id).json()["confirmation_card"]
+    replay = client.post(PREFIX + "/cancel/confirm", json={**first_payload,
+        "operation_id": second_card["operation_id"]})
+
+    assert replay.status_code == 409
+    with client.app.state.session_factory() as db:
+        second_order = db.get(Order, UUID(second_order_id))
+        second_operation = db.get(CancelOperation, UUID(second_card["operation_id"]))
+        assert second_order.status == "pending_payment"
+        assert second_operation.state == "pending" and second_operation.credential_hash is not None
+
+
+def test_confirmation_rejects_missing_csrf_wrong_origin_and_wrong_binding(cancel_client):
+    client = cancel_client
+    order_id = make_order(client)
+    created = page(client)
+    card = propose(client, created, order_id).json()["confirmation_card"]
+    payload = {"page_instance_id": created["page_instance_id"], "consultation_id": created["consultation_id"],
+               "operation_id": card["operation_id"], "confirmation_token": card["confirmation_token"]}
+    csrf = client.headers.pop("X-CSRF-Token")
+    try:
+        assert client.post(PREFIX + "/cancel/confirm", json=payload).status_code == 403
+    finally:
+        client.headers["X-CSRF-Token"] = csrf
+    origin = client.headers["Origin"]
+    client.headers["Origin"] = "http://attacker.test"
+    try:
+        assert client.post(PREFIX + "/cancel/confirm", json=payload).status_code == 403
+    finally:
+        client.headers["Origin"] = origin
+    payload["consultation_id"] = str(uuid4())
+    assert client.post(PREFIX + "/cancel/confirm", json=payload).status_code == 403
+    with client.app.state.session_factory() as db:
+        operation = db.get(CancelOperation, UUID(card["operation_id"]))
+        assert operation.state == "pending" and operation.credential_hash is not None
+
+
+def test_confirmation_rejects_a_different_buyers_session_and_page(cancel_client):
+    client = cancel_client
+    order_id = make_order(client)
+    created = page(client)
+    card = propose(client, created, order_id).json()["confirmation_card"]
+    other_client = make_other_buyer(client)
+    other_page = page(other_client)
+
+    response = other_client.post(PREFIX + "/cancel/confirm", json={
+        "page_instance_id": other_page["page_instance_id"],
+        "consultation_id": other_page["consultation_id"],
+        "operation_id": card["operation_id"],
+        "confirmation_token": card["confirmation_token"],
+    })
+
+    assert response.status_code == 403 and response.json()["code"] == "resource_unavailable"
+    with client.app.state.session_factory() as db:
+        operation = db.get(CancelOperation, UUID(card["operation_id"]))
+        order = db.get(Order, UUID(order_id))
+        assert operation.state == "pending" and operation.credential_hash is not None
+        assert order.status == "pending_payment"
+
+
+def test_confirmation_rechecks_payment_deadline_before_order_cancellation(cancel_client):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    client = cancel_client
+    now = client.app.state.clock()
+    order_id = make_order(client, expires_in=timedelta(seconds=10))
+    created = page(client)
+    card = propose(client, created, order_id).json()["confirmation_card"]
+    with client.app.state.session_factory.begin() as db:
+        db.execute(update(CancelOperation).where(CancelOperation.id == UUID(card["operation_id"])).values(
+            expires_at=now + timedelta(minutes=2)))
+    calls = 0
+
+    def clock():
+        nonlocal calls
+        calls += 1
+        return now if calls == 1 else now + timedelta(seconds=11)
+
+    client.app.state.clock = clock
+    response = client.post(PREFIX + "/cancel/confirm", json={
+        "page_instance_id": created["page_instance_id"], "consultation_id": created["consultation_id"],
+        "operation_id": card["operation_id"], "confirmation_token": card["confirmation_token"]})
+
+    assert response.status_code == 200 and response.json()["status"] == "rejected"
+    with client.app.state.session_factory() as db:
+        order = db.get(Order, UUID(order_id))
+        operation = db.get(CancelOperation, UUID(card["operation_id"]))
+        assert order.status == "pending_payment"
+        assert operation.state == "rejected"
+        assert operation.evidence["reason"] == "payment_deadline_passed"
+
+
+def test_confirmation_expiry_is_persisted_and_does_not_change_the_order(cancel_client):
+    client = cancel_client
+    now = client.app.state.clock()
+    client.app.state.clock = lambda: now
+    order_id = make_order(client)
+    created = page(client)
+    card = propose(client, created, order_id).json()["confirmation_card"]
+    client.app.state.clock = lambda: now + timedelta(seconds=121)
+
+    response = client.post(PREFIX + "/cancel/confirm", json={
+        "page_instance_id": created["page_instance_id"], "consultation_id": created["consultation_id"],
+        "operation_id": card["operation_id"], "confirmation_token": card["confirmation_token"]})
+
+    assert response.status_code == 200 and response.json()["status"] == "expired"
+    with client.app.state.session_factory() as db:
+        operation = db.get(CancelOperation, UUID(card["operation_id"]))
+        order = db.get(Order, UUID(order_id))
+        assert operation.state == "expired" and operation.credential_hash is None
+        assert order.status == "pending_payment"
+
+
+def test_confirmation_limiter_failure_returns_unavailable_without_cancelling(cancel_client):
+    from shop_api.customer_service import CustomerServiceUnavailable
+
+    client = cancel_client
+    order_id = make_order(client)
+    created = page(client)
+    card = propose(client, created, order_id).json()["confirmation_card"]
+    client.app.state.customer_service_limiter.allow = lambda *args, **kwargs: (_ for _ in ()).throw(
+        CustomerServiceUnavailable())
+    payload = {"page_instance_id": created["page_instance_id"],
+               "consultation_id": created["consultation_id"],
+               "operation_id": card["operation_id"],
+               "confirmation_token": card["confirmation_token"]}
+
+    response = client.post(PREFIX + "/cancel/confirm", json=payload)
+
+    assert response.status_code == 503
+    with client.app.state.session_factory() as db:
+        order = db.get(Order, UUID(order_id))
+        operation = db.get(CancelOperation, UUID(card["operation_id"]))
+        assert order.status == "pending_payment"
+        assert operation.state == "pending" and operation.credential_hash is not None
+
+
+def test_confirmation_is_limited_to_ten_attempts_per_minute_per_buyer(cancel_client):
+    client = cancel_client
+    order_id = make_order(client)
+    created = page(client)
+    card = propose(client, created, order_id).json()["confirmation_card"]
+    payload = {"page_instance_id": created["page_instance_id"],
+               "consultation_id": created["consultation_id"],
+               "operation_id": card["operation_id"],
+               "confirmation_token": card["confirmation_token"]}
+
+    responses = [client.post(PREFIX + "/cancel/confirm", json=payload) for _ in range(10)]
+    limited = client.post(PREFIX + "/cancel/confirm", json=payload)
+
+    assert responses[0].status_code == 200
+    assert all(response.status_code == 200 for response in responses[1:])
+    assert all(response.json()["data"] == responses[0].json()["data"] for response in responses[1:])
+    assert limited.status_code == 429 and limited.json()["code"] == "rate_limited"
+    assert int(limited.headers["retry-after"]) >= 1
 
 
 def test_explicit_selection_and_fixed_text_issue_a_confirmation_card(cancel_client):

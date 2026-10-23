@@ -355,7 +355,7 @@ test('order candidates require an explicit click before detail and never render 
   await expect(log).not.toContainText('预计送达：')
 })
 
-test('pending order shows a cancellation proposal without enabling execution', async ({ page }) => {
+test('buyer confirmation cancels a pending order and verifies its execution evidence', async ({ page }) => {
   const orderNumber = '11111111-1111-4111-8111-111111111111'
   const otherOrderNumber = '44444444-4444-4444-8444-444444444444'
   const operationId = '33333333-3333-4333-8333-333333333333'
@@ -377,19 +377,38 @@ test('pending order shows a cancellation proposal without enabling execution', a
   await page.route('**/api/customer-service/pages', route => route.fulfill({ status: 201, json: {
     ...response('ok'), data: { page_instance_id: 'page-cancel', consultation_id: 'consultation-cancel' },
   } }))
+  await page.route('**/api/auth/csrf', route => route.fulfill({ json: { csrf_token: 'synthetic-csrf' } }))
+  await page.route(`**/api/orders/${orderNumber}`, route => route.fulfill({ json: {
+    id: orderNumber, status: 'closed', close_reason: 'buyer_cancelled', expires_at: detail.expires_at,
+  } }))
+  const confirmBodies: Record<string, unknown>[] = []
+  await page.route('**/api/customer-service/cancel/confirm', async route => {
+    confirmBodies.push(route.request().postDataJSON())
+    expect(bodies).toHaveLength(4)
+    expect(route.request().headers()['x-csrf-token']).toBe('synthetic-csrf')
+    await route.fulfill({ json: { ...response('executed'), status: 'executed', data: {
+      operation_id: operationId, order_id: orderNumber, order_status: 'closed',
+      close_reason: 'buyer_cancelled', evidence: { order_id: orderNumber, status: 'closed', close_reason: 'buyer_cancelled' },
+    } } })
+  })
   await page.route('**/api/customer-service/messages', async route => {
     const body = route.request().postDataJSON()
     bodies.push(body)
     if (body.text === '申请取消订单') {
       await route.fulfill({ json: {
         ...response('ok'),
-        data: { reply: '已生成取消确认方案；确认执行尚未开放。取消后将恢复商品库存，操作不可撤销，且购物车不会恢复。', cards: [], citations: [] },
+        data: { reply: '已生成取消确认方案。取消后将恢复商品库存，操作不可撤销，且购物车不会恢复。', cards: [], citations: [] },
         confirmation_card: {
           operation_id: operationId, order_number: orderNumber, status: 'pending_payment',
           product_summary: '测试商品 ×1', total: '129.00', currency: 'CNY',
           expires_at: expiresAt, confirmation_token: token,
         },
       } })
+      return
+    }
+    if (body.selected_order_id) {
+      const currentDetail = { ...detail, status: 'pending_payment', close_reason: null }
+      await route.fulfill({ json: { ...response('ok'), data: { reply: '订单详情', cards: [{ type: 'order_detail', order: currentDetail }], citations: [] } } })
       return
     }
     const data = body.selected_order_id
@@ -402,14 +421,16 @@ test('pending order shows a cancellation proposal without enabling execution', a
   const log = page.getByRole('log', { name: '客服聊天记录' })
   await page.getByRole('button', { name: `查询订单 ${orderNumber.slice(0, 8)}… 的详情` }).click()
   await expect(log).toContainText('状态：待付款')
+  await page.getByRole('button', { name: `查询订单 ${orderNumber.slice(0, 8)}… 的详情` }).click()
+  await expect(page.getByRole('button', { name: '申请取消订单', exact: true })).toBeVisible()
   await page.getByRole('button', { name: '申请取消订单', exact: true }).click()
   await expect(log).toContainText('取消确认方案')
   await expect(log).toContainText(`操作编号：${operationId}`)
   await expect(log).toContainText(`订单号：${orderNumber}`)
   await expect(log).toContainText('当前状态：待付款')
   await expect(log).toContainText('取消后将恢复商品库存；操作不可撤销；购物车不会恢复。')
-  await expect(log).toContainText('确认执行尚未开放；本切片不会取消订单。')
-  await expect(page.getByRole('button', { name: '确认取消（尚未开放执行）' })).toBeDisabled()
+  await expect(log).toContainText('请核对订单与取消后果，再确认取消。')
+  await expect(page.getByRole('button', { name: '确认取消订单' })).toBeEnabled()
   expect(bodies.at(-1)).toMatchObject({ text: '申请取消订单', selected_order_id: orderNumber })
   const storage = await page.evaluate(() => ({
     local: JSON.stringify(localStorage), session: JSON.stringify(sessionStorage),
@@ -418,10 +439,67 @@ test('pending order shows a cancellation proposal without enabling execution', a
   expect(storage.session).not.toContain(token)
   expect(storage.local).not.toContain(operationId)
   expect(storage.session).not.toContain(operationId)
-  await page.getByRole('button', { name: `查询订单 ${otherOrderNumber.slice(0, 8)}… 的详情` }).click()
-  await expect(log).toContainText('订单选择已变化，请重新申请取消方案。')
-  await expect.poll(() => JSON.stringify(bodies.at(-1))).toContain(otherOrderNumber)
-  await expect(page.getByRole('button', { name: '确认取消（尚未开放执行）' })).toBeDisabled()
+  await page.getByRole('button', { name: '确认取消订单' }).click()
+  await expect(log).toContainText('取消成功：本人订单已关闭，原因是买家取消。')
+  expect(confirmBodies).toEqual([{ page_instance_id: 'page-cancel', consultation_id: 'consultation-cancel',
+    operation_id: operationId, confirmation_token: token }])
+  expect(bodies).toHaveLength(4)
+  await expect(log).toContainText('状态：待付款')
+})
+
+test('unclear cancellation confirmation shows operation ID and never retries', async ({ page }) => {
+  const orderNumber = '11111111-1111-4111-8111-111111111111'
+  const operationId = '88888888-8888-4888-8888-888888888888'
+  const token = 'g'.repeat(43)
+  const candidate = { order_number: orderNumber, created_at: '2026-10-23T09:00:00+00:00',
+    product_summary: '测试商品 ×1', total: '129.00', status: 'pending_payment' }
+  const detail = { order_number: orderNumber, status: 'pending_payment', total: '129.00',
+    product_summary: '测试商品 ×1', expires_at: '2026-10-23T09:30:00+00:00', close_reason: null,
+    shipping_company: null, tracking_number: null, shipped_at: null }
+  let selectedOrderQueries = 0
+  await page.route('**/api/customer-service/pages', route => route.fulfill({ status: 201, json: {
+    ...response('ok'), data: { page_instance_id: 'page-unknown', consultation_id: 'consultation-unknown' },
+  } }))
+  const confirmBodies: Record<string, unknown>[] = []
+  await page.route('**/api/customer-service/cancel/confirm', async route => {
+    confirmBodies.push(route.request().postDataJSON())
+    expect(route.request().headers()['x-csrf-token']).toBe('synthetic-csrf')
+    await route.fulfill({ status: 503, json: { ...response('result_unknown'), code: 'result_unknown', data: null } })
+  })
+  await page.route('**/api/customer-service/messages', async route => {
+    const body = route.request().postDataJSON()
+    if (body.text === '申请取消订单') {
+      await route.fulfill({ json: { ...response('ok'), data: { reply: '已生成取消确认方案。', cards: [], citations: [] },
+        confirmation_card: { operation_id: operationId, order_number: orderNumber, status: 'pending_payment',
+          product_summary: '测试商品 ×1', total: '129.00', currency: 'CNY',
+          expires_at: new Date(Date.now() + 120000).toISOString(), confirmation_token: token } } })
+      return
+    }
+    if (body.selected_order_id) {
+      selectedOrderQueries += 1
+      const currentDetail = { ...detail, status: 'pending_payment', close_reason: null }
+      await route.fulfill({ json: { ...response('ok'), data: { reply: '订单详情', cards: [{ type: 'order_detail', order: currentDetail }], citations: [] } } })
+      return
+    }
+    const data = body.selected_order_id
+      ? { reply: '订单详情', cards: [{ type: 'order_detail', order: detail }], citations: [] }
+      : { reply: '订单列表', cards: [{ type: 'order', order: candidate }], citations: [] }
+    await route.fulfill({ json: { ...response('ok'), data } })
+  })
+  await page.goto('/customer-service.html')
+  await page.getByRole('button', { name: '查询我的订单' }).click()
+  await expect(page.getByRole('button', { name: /查询订单 .* 的详情/ })).toBeVisible()
+  await page.getByRole('button', { name: /查询订单 .* 的详情/ }).click()
+  await expect.poll(() => selectedOrderQueries).toBe(1)
+  await expect(page.getByRole('button', { name: '申请取消订单', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '申请取消订单', exact: true }).click()
+  const log = page.getByRole('log', { name: '客服聊天记录' })
+  await page.getByRole('button', { name: '确认取消订单', exact: true }).click()
+  await expect(log).toContainText('取消结果待核验，操作编号：' + operationId)
+  expect(confirmBodies).toHaveLength(1)
+  await expect(page.getByRole('button', { name: '确认取消订单', exact: true })).toBeDisabled()
+  await page.waitForTimeout(150)
+  expect(confirmBodies).toHaveLength(1)
 })
 
 test('expired cancellation card is marked unusable without execution', async ({ page }) => {
@@ -445,7 +523,7 @@ test('expired cancellation card is marked unusable without execution', async ({ 
     if (body.text === '申请取消订单') {
       await route.fulfill({ json: {
         ...response('ok'),
-        data: { reply: '已生成取消确认方案；确认执行尚未开放。', cards: [], citations: [] },
+        data: { reply: '已生成取消确认方案。', cards: [], citations: [] },
         confirmation_card: {
           operation_id: operationId, order_number: orderNumber, status: 'pending_payment',
           product_summary: '测试商品 ×1', total: '129.00', currency: 'CNY',
@@ -466,7 +544,7 @@ test('expired cancellation card is marked unusable without execution', async ({ 
   await page.getByRole('button', { name: '申请取消订单', exact: true }).click()
   await expect(log).toContainText('取消确认方案')
   await expect(log).toContainText('确认方案已过期，请重新申请取消方案。', { timeout: 5000 })
-  await expect(page.getByRole('button', { name: '确认取消（尚未开放执行）' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '确认取消订单' })).toBeDisabled()
 })
 
 test('tampered confirmation card is rejected without rendering', async ({ page }) => {
@@ -488,7 +566,7 @@ test('tampered confirmation card is rejected without rendering', async ({ page }
     if (body.text === '申请取消订单') {
       await route.fulfill({ json: {
         ...response('ok'),
-        data: { reply: '已生成取消确认方案；确认执行尚未开放。', cards: [], citations: [] },
+        data: { reply: '已生成取消确认方案。', cards: [], citations: [] },
         confirmation_card: {
           operation_id: '66666666-6666-4666-8666-666666666666', order_number: orderNumber,
           status: 'pending_payment', product_summary: '测试商品 ×1', total: '129.00', currency: 'CNY',
@@ -541,7 +619,7 @@ test('renewal rate limit keeps a valid card and sends one in-flight request', as
     if (body.text === '申请取消订单') {
       await route.fulfill({ json: {
         ...response('ok'),
-        data: { reply: '已生成取消确认方案；确认执行尚未开放。', cards: [], citations: [] },
+        data: { reply: '已生成取消确认方案。', cards: [], citations: [] },
         confirmation_card: {
           operation_id: operationId, order_number: orderNumber, status: 'pending_payment',
           product_summary: '测试商品 ×1', total: '129.00', currency: 'CNY',
@@ -571,7 +649,7 @@ test('renewal rate limit keeps a valid card and sends one in-flight request', as
   await expect(log).toContainText(`订单号：${orderNumber}`)
   await expect(page.locator('.confirmation-card')).toHaveCount(1)
   await expect(page.locator('.confirmation-card .invalid-note')).toHaveCount(0)
-  await expect(page.getByRole('button', { name: '确认取消（尚未开放执行）' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '确认取消订单' })).toBeEnabled()
 })
 
 test('anonymous order questions prompt login without showing order data', async ({ page }) => {

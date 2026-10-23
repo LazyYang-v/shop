@@ -152,13 +152,12 @@ try {
   await confirmationCard.waitFor()
   const cardText = await confirmationCard.textContent()
   for (const expected of [`操作编号：${card.operation_id}`, cancelOrderId, '待付款', '¥129.00',
-    '取消后将恢复商品库存；操作不可撤销；购物车不会恢复。',
-    '确认执行尚未开放；本切片不会取消订单。']) {
+    '取消后将恢复商品库存；操作不可撤销；购物车不会恢复。', '请核对订单与取消后果，再确认取消。']) {
     assert.ok(cardText.includes(expected))
   }
-  const confirmButton = confirmationCard.getByRole('button', { name: '确认取消（尚未开放执行）' })
+  const confirmButton = confirmationCard.getByRole('button', { name: '确认取消订单' })
   assert.equal(await confirmButton.count(), 1)
-  assert.equal(await confirmButton.isDisabled(), true)
+  assert.equal(await confirmButton.isEnabled(), true)
   assert.ok(!(await ownerLog.textContent()).includes(card.confirmation_token))
   const storage = await ownerPage.evaluate(() => ({ local: { ...localStorage }, session: { ...sessionStorage } }))
   for (const secret of [card.confirmation_token, card.operation_id]) {
@@ -168,11 +167,21 @@ try {
   assert.ok(!(await ownerPage.content()).includes(card.confirmation_token))
   assert.ok((await ownerPage.content()).includes(card.operation_id))
 
-  const invalidNote = confirmationCard.locator('.invalid-note')
-  await invalidNote.waitFor({ timeout: 15000 })
-  assert.ok((await invalidNote.textContent()).includes('确认方案已过期，请重新申请取消方案。'))
-  assert.equal(await confirmButton.isDisabled(), true)
-
+  const confirmRequest = ownerPage.waitForResponse(item => new URL(item.url()).pathname.endsWith('/cancel/confirm'))
+  await confirmButton.click()
+  response = await confirmRequest
+  assert.equal(response.status(), 200)
+  const execution = await response.json()
+  assert.equal(execution.status, 'executed')
+  assert.equal(execution.data.operation_id, card.operation_id)
+  assert.equal(execution.data.order_id, cancelOrderId)
+  assert.equal(execution.data.order_status, 'closed')
+  assert.equal(execution.data.close_reason, 'buyer_cancelled')
+  assert.equal(execution.data.evidence.close_reason, 'buyer_cancelled')
+  await ownerPage.waitForFunction(() => document.querySelector('[role="log"]').textContent.includes('取消成功：本人订单已关闭，原因是买家取消。'))
+  assert.equal((await ownerLog.textContent()).includes('取消结果待核验'), false)
+  assert.equal((await ownerLog.textContent()).includes('已取消订单，商品库存已恢复。'), false)
+  assert.ok(!(await ownerLog.textContent()).includes(card.confirmation_token))
   await ownerPage.reload()
   await ownerPage.waitForFunction(() => document.getElementById('account-status').textContent === '已登录买家')
   assert.equal(await ownerPage.locator('.confirmation-card').count(), 0)

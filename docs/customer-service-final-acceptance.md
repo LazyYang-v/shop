@@ -90,12 +90,12 @@ R06 是同一隔离库上的应用重启，R09 是从版本化 fixture 创建新
 | 当前持久演示版本观察 | 仍是 #6 方案镜像 | 只读 `docker ps` 显示 `shop-customer-service-demo-api:20261023-cancel-proposal`，不是 #9 源码；本轮不将其当作新功能部署证明，不更新该环境 |
 | 组合 API 的 TDD 定向循环 | 代理报告 3 passed，11 deselected；随后组合定向 10 passed，11 deselected | 三条确定性、六工具成功及六类失败均已有工作区定向结果；未执行集成分支全套，不把分批结果相加当全覆盖 |
 | 六工具合成模型及受控失败定向循环 | 六工具场景 1 passed；六类失败场景 6 passed（代理报告） | 构造器缺失初始 RED；预算不足初始 503 修为可独立完成查询的 partial/budget_exhausted。最后补入 request_limit/no_selection/identity/private_text 四参数尚无最终运行记录；不代表真实提供方兼容性 |
-| 当前分支 API/真实 PostgreSQL 完整回归 | 未运行：自动审批阻塞 | 原始问答 `call_908681bd21244b17a2b152ee5f1a5139` 明确选“授权上述范围”，但接手后的定向 pytest 在夹具执行前仍两次被审批拒绝。未去除安全校验或改用其他写入路径；全量回归仍待放行 |
+| 当前分支 API/真实 PostgreSQL 完整回归 | 未运行：自动审批阻塞；仅收集 **379 项** 成功 | 原始问答 `call_908681bd21244b17a2b152ee5f1a5139` 明确选“授权上述范围”，但接手后的定向 pytest 在夹具执行前仍两次被审批拒绝。未去除安全校验或改用其他写入路径；无密码占位 URL 的 `--collect-only` 不执行夹具，不能当作运行通过。全量回归仍待放行 |
 | 桌面与移动真实 Chrome | 实施代理报告定向 1 passed（15.69 秒）；集成分支尚未重跑 | 每端均有已保存物流/退款能力说明、真实政策索引故障及独立订单查询、未支付方案、用户确认、响应丢失后核验成功。合成组合 exchange 14 次、商品 exchange 4 次；真实提供方及 WeKnora 请求为 0。之后补入的输入别名/额外失败参数不在该报告范围 |
 | 当前分支 Playwright 页面模拟套件 | **26 passed（24.2 秒）** | 在 `039c7c4` 运行完整 `e2e/customer-service.spec.ts`；逐项来源、确认、未知结果与生命周期均通过。与真实 API 证据分开，不证明事务或外部依赖 |
 | 全后端类型检查 | 未通过：仍为 18 项既有诊断，无新增 | 合入前后运行 `uv run --project backend ty check backend/src/shop_api`；分布均为 cancel 7、model_budget 3、model_transport 5、spend_guard 1、reconcile_demo_catalog 2 |
 | 构建、变更模块类型及语法/差异检查 | **通过** | `npm run build`、四个变更生产模块 `ty check`、Node 脚本语法、六个变更 Python 文件 AST、`git diff 12f9346...HEAD --check`；不把基线失败写成全项目类型通过。85 个本地链接/锚点检查通过 |
-| 两轴代码审查 | 进行中 | 固定 `12f9346...039c7c4`，Standards 与 Spec 分开报告，修复后补最终结果 |
+| 两轴代码审查 | 初审完成：规范 2 项、规格 3 项，重合后 3 处待修复 | 固定 `12f9346...039c7c4`，Standards 与 Spec 分开记录在[组合审查](customer-service-composition-review.md)；超时部分结果、后续故障保留独立事实、重试计入分类/总额度 |
 
 ## 本地重复验收入口
 

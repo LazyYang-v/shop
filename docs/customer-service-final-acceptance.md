@@ -2,7 +2,7 @@
 
 日期：2026-10-24。工单：[LazyYang-v/docs#9](https://github.com/LazyYang-v/docs/issues/9)。集成分支：`integration/customer-service-ticket-9`，基线 `12f9346`。
 
-**当前状态：实施与验收进行中；不能宣称真实商城首版通过。** 本票沿用 #4 已批准的合成政策范围：虚构商品、专用买家、合成政策与合成模型。真实商城政策、真实 WeKnora 产品接入和新增付费调用均未放行。依赖 #4、#5、#8 关闭不等于这些外部门槛解除。
+**当前状态：合成组合实现已合入 `039c7c4`；页面整套测试通过，集成分支数据库与真实 Chrome 重跑受自动审批阻塞。不能宣称真实商城首版通过。** 本票沿用 #4 已批准的合成政策范围：虚构商品、专用买家、合成政策与合成模型。真实商城政策、真实 WeKnora 产品接入和新增付费调用均未放行。依赖 #4、#5、#8 关闭不等于这些外部门槛解除。
 
 ## 验收范围与证据约定
 
@@ -10,7 +10,7 @@
 
 下列固定问题和预期在 #9 最终运行前记录。它们是公开的开发/回归场景，不是独立盲测集，不用于推导生产准确率、用户解决率或成本收益。数据库生成的订单编号使用“本人的已选订单”“他人订单”描述；实际请求中的随机编号不进入公开证据。场景通过须有对应公共请求断言，不能只据代码存在、Mock 响应或既有十八项普通取消测试作结论。
 
-证据分为：商城 API/真实 PostgreSQL；真实 Chrome/真实 API；真实 Chrome/模拟 API；独立离线参考；历史外部观察。矩阵中的“待本轮”不表示通过。历史结果只在注明版本/日期的单独记录中引用；不与本轮结果相加计算覆盖数。
+证据分为：商城 API/真实 PostgreSQL；真实 Chrome/真实 API；真实 Chrome/模拟 API；独立离线参考；历史外部观察。矩阵中的“待本轮”不表示通过；目前这些 API/数据库行均因集成分支重跑被自动审批阻塞而保持待验证。页面套件 26 项通过只证明各对应 Mock 页面行为。历史结果只在注明版本/日期的单独记录中引用；不与本轮结果相加计算覆盖数。
 
 ## 六工具及独立协议能力
 
@@ -23,7 +23,7 @@
 | get_my_order | 浏览器明确选定的本人订单；模型不能自报选择 | 商城裁剪九字段及已保存物流；无地址电话 | 既有实现；组合场景待本轮验证 |
 | propose_cancel | 明确已选、待支付、未超时订单；每轮最多 1 次 | 服务端操作摘要及独立确认卡；仅生成方案，不改订单 | 既有实现；组合场景待本轮验证 |
 | 浏览器确认与核验 | 认证/CSRF/Origin/所有绑定；不注册给模型 | 操作证据与订单 API；核验可撤销凭据，不直接改订单 | #7/#8 既有实现；当前版本待回归 |
-| 组合模型边界 | 受控组合意图；模型仅选择受限工具和引用代号 | 以上同一权限与分类额度，最终事实由服务端组装 | #9 实施中；不可宣称六工具真实提供方兼容性已验证 |
+| 组合模型边界 | 受控整句“快递未到且想退款”/“快递未到，我想退款”，或分号连接 2–4 个完整批准子句；模型仅选择受限工具和引用代号 | 以上同一权限与分类额度，最终事实由服务端组装 | #9 已实现；仅受信 `create_app(synthetic_consultation_exchange=...)` 可注入合成 exchange，未注入时确定性执行；不可宣称六工具真实提供方兼容性已验证 |
 
 ## 固定评测矩阵
 
@@ -35,9 +35,9 @@
 | G02 | 匿名：“请问春日轻盈针织开衫的价格和库存？”；合成 exchange | 受控模型工具往返，最终事实与商品 API 一致；不发送原始商品名称/UUID | 待本轮 | 同文件 `test_anonymous_compound_question_completes_synthetic_tool_loop`；`test_customer_service_browser.py` |
 | G03 | “演示商城多久发货？” | 显示“虚构演示政策（非真实商城政策）”、v2、来源和生效区间，不声称真实商城承诺 | 待本轮 | `test_customer_service_policy.py::test_policy_message_returns_citation_without_calling_a_model`；真实浏览器 |
 | G04 | 买家：“查询我的订单”→点击一笔本人已发货订单 | 先候选后详情；已保存物流公司/运单号/发货时间与订单 API 一致，无实时轨迹及预计送达 | 待本轮 | `test_customer_service_orders.py::test_zero_one_and_multiple_orders_require_explicit_selection`、`test_order_detail_returns_only_trimmed_saved_facts`；真实浏览器 |
-| G05 | 已明确选择本人待收货订单：“快递未到，我想退款” | 读取该单、展示已保存物流，说明无实时轨迹和退款接口；不生成不适用的取消方案、不声称退款受理 | 工作区定向 GREEN；初始 RED 为 needs_clarification 而非 ok；待合入回归与真实浏览器 | `test_customer_service_orders.py::test_delivery_refund_consultation_shows_selected_saved_logistics_and_capability_limits` |
-| G06 | 已明确选择本人未超时待支付订单：同一组合诉求 | 只在条件满足时提出取消方案；明确取消不是退款，订单与库存签发前后不变，须按钮确认才执行 | 工作区定向 GREEN；初始 RED 未返回确认卡；待合入回归与真实浏览器 | 同文件 `test_delivery_refund_only_proposes_for_explicit_pending_unexpired_order`；原方案/确认回归 |
-| G07 | 已选订单，政策检索故障；继续固定订单查询 | 政策不可用单独说明，固定订单查询独立成功且不调用模型/真实检索 | 工作区定向 GREEN；初始 RED 为 needs_clarification；待合入回归与真实浏览器 | 同文件 `test_composite_policy_outage_keeps_independent_selected_order_query`；预期 partial/policy_unavailable，附事实来源及查询时间 |
+| G05 | 已明确选择本人待收货订单：“快递未到，我想退款”或“快递未到且想退款” | 读取该单、展示已保存物流，说明无实时轨迹和退款接口；不生成不适用的取消方案、不声称退款受理 | 代理报告原固定句 API/桌面移动真实流程通过；主分支 Mock 页面通过。接手时为逗号表述补回归，语法检查先 RED 后 GREEN，其新增 API 参数待数据库放行 | `test_customer_service_orders.py::test_delivery_refund_consultation_shows_selected_saved_logistics_and_capability_limits`；Playwright `selected buyer order receives composite refund limits and per-item partial sources` |
+| G06 | 已明确选择本人未超时待支付订单：同一组合诉求 | 只在条件满足时提出取消方案；明确取消不是退款，订单与库存签发前后不变，须按钮确认才执行 | 原方案与 #9 已合入；代理报告定向 API 及桌面/移动真实签发、用户确认和响应丢失后核验通过；主分支完整数据库重跑被审批阻塞 | 同文件 `test_delivery_refund_only_proposes_for_explicit_pending_unexpired_order`；真实 `test_customer_service_browser.py`；原方案/确认回归 |
+| G07 | 已选订单，政策检索故障；继续固定订单查询 | 政策不可用单独说明，固定订单查询独立成功且不调用模型/真实检索 | 代理报告定向 API 与桌面/移动真实流程通过，主分支 Mock 来源展示通过；完整数据库重跑被审批阻塞 | 同文件 `test_composite_policy_outage_keeps_independent_selected_order_query`；预期 partial/policy_unavailable，附事实来源及查询时间；真实与模拟浏览器 |
 
 ### 边界场景
 
@@ -88,14 +88,14 @@ R06 是同一隔离库上的应用重启，R09 是从版本化 fixture 创建新
 | 独立离线相关性参考 | 40/40 通过 | `python3 -I docs/policy-relevance-offline.py`；无外部调用，未回放临时真实候选文件；不代表商城 API 或生产质量 |
 | 部署静态预检 | 通过 | `python3 -I deploy/customer-service-demo/preflight.py`；合成配置，默认 0 服务；未启动/更新容器 |
 | 当前持久演示版本观察 | 仍是 #6 方案镜像 | 只读 `docker ps` 显示 `shop-customer-service-demo-api:20261023-cancel-proposal`，不是 #9 源码；本轮不将其当作新功能部署证明，不更新该环境 |
-| 组合 API 的 TDD 定向循环 | 3 passed，11 deselected | 实施工作区报告三条新用例均先 RED 后 GREEN；只证明这三条公共 API 行为，最终分支仍需回归 |
-| 六工具合成模型及受控失败定向循环 | 六工具场景 1 passed；六类失败场景 6 passed | 工作区报告：构造器缺失初始 RED；预算不足初始 503 修为可独立完成查询的 partial/budget_exhausted。逐项用例见 S06/B08；不代表真实提供方兼容性 |
-| 当前分支 API/真实 PostgreSQL 完整回归 | 待运行 | 两个数据库 URL 都必须指向 `127.0.0.1:55445/shop_test`，只在测试进程启用既有清理授权 |
-| 当前分支桌面与移动真实 Chrome | 待运行 | 不以桌面流程外加移动截图替代移动交互；记录具体组合流程和结果 |
-| 当前分支 Playwright 页面模拟套件 | 待运行 | 与真实 API 证据分开，不证明事务或外部依赖 |
-| 全后端类型检查基线 | 未通过：18 项既有诊断 | 在 #9 实现合入前运行 `uv run --project backend ty check backend/src/shop_api`；分布为 cancel 7、model_budget 3、model_transport 5、spend_guard 1、reconcile_demo_catalog 2；最终检查需区分新增诊断 |
-| 构建、变更模块类型及差异检查 | 待运行 | 不把基线失败写成全项目类型检查通过 |
-| 两轴代码审查 | 待运行 | Standards 与 Spec 分开报告，修复后补最终结果 |
+| 组合 API 的 TDD 定向循环 | 代理报告 3 passed，11 deselected；随后组合定向 10 passed，11 deselected | 三条确定性、六工具成功及六类失败均已有工作区定向结果；未执行集成分支全套，不把分批结果相加当全覆盖 |
+| 六工具合成模型及受控失败定向循环 | 六工具场景 1 passed；六类失败场景 6 passed（代理报告） | 构造器缺失初始 RED；预算不足初始 503 修为可独立完成查询的 partial/budget_exhausted。最后补入 request_limit/no_selection/identity/private_text 四参数尚无最终运行记录；不代表真实提供方兼容性 |
+| 当前分支 API/真实 PostgreSQL 完整回归 | 未运行：自动审批阻塞 | 原始问答 `call_908681bd21244b17a2b152ee5f1a5139` 明确选“授权上述范围”，但接手后的定向 pytest 在夹具执行前仍两次被审批拒绝。未去除安全校验或改用其他写入路径；全量回归仍待放行 |
+| 桌面与移动真实 Chrome | 实施代理报告定向 1 passed（15.69 秒）；集成分支尚未重跑 | 每端均有已保存物流/退款能力说明、真实政策索引故障及独立订单查询、未支付方案、用户确认、响应丢失后核验成功。合成组合 exchange 14 次、商品 exchange 4 次；真实提供方及 WeKnora 请求为 0。之后补入的输入别名/额外失败参数不在该报告范围 |
+| 当前分支 Playwright 页面模拟套件 | **26 passed（24.2 秒）** | 在 `039c7c4` 运行完整 `e2e/customer-service.spec.ts`；逐项来源、确认、未知结果与生命周期均通过。与真实 API 证据分开，不证明事务或外部依赖 |
+| 全后端类型检查 | 未通过：仍为 18 项既有诊断，无新增 | 合入前后运行 `uv run --project backend ty check backend/src/shop_api`；分布均为 cancel 7、model_budget 3、model_transport 5、spend_guard 1、reconcile_demo_catalog 2 |
+| 构建、变更模块类型及语法/差异检查 | **通过** | `npm run build`、四个变更生产模块 `ty check`、Node 脚本语法、六个变更 Python 文件 AST、`git diff 12f9346...HEAD --check`；不把基线失败写成全项目类型通过。85 个本地链接/锚点检查通过 |
+| 两轴代码审查 | 进行中 | 固定 `12f9346...039c7c4`，Standards 与 Spec 分开报告，修复后补最终结果 |
 
 ## 本地重复验收入口
 
@@ -116,9 +116,9 @@ SHOP_DATABASE_URL="$SHOP_TEST_DATABASE_URL" \
 
 | #9 条目 | 当前交付状态 | 放行限制 |
 |---|---|---|
-| 快递未到且想退款的组合演示 | 实施中 | 只适用取消方案；无退款、实时轨迹或人工受理能力 |
-| 政策故障与独立订单、同权限模型组合 | 实施中 | 六工具模型路径需合成协议及权限/预算测试；真实提供方兼容性另计 |
-| 固定黄金/边界/回归/安全输入与证据 | 矩阵已固定，运行待补 | 不将计划或旧普通取消用例标成客服全链路通过 |
+| 快递未到且想退款的组合演示 | 已实现并合入；代理定向真实桌面/移动通过，集成整套重跑待放行 | 只适用取消方案；无退款、实时轨迹或人工受理能力 |
+| 政策故障与独立订单、同权限模型组合 | 已实现；定向合成协议结果及 Mock 页面通过，集成数据库回归待放行 | 真实提供方兼容性另计；不将定向结果推成全部边界通过 |
+| 固定黄金/边界/回归/安全输入与证据 | 32 个场景已固定；完整集成结果尚缺 | 不将计划或旧普通取消用例标成客服全链路通过 |
 | 实现/验证/阻塞分开记录 | 本文及各切片记录 | 尚未执行的行保持待验证；不填写未测解决率/成本 |
 | 全部 WeKnora 证据和完整首版 | [能力矩阵已整理](customer-service-weknora-acceptance.md)，真实入口阻塞 | 真实政策、适配器、权限复核、依赖故障/独立问题集及外部保留条件未满足；不宣称首版通过 |
 

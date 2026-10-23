@@ -1,11 +1,11 @@
 # 客服 #5 本人订单查询实施记录
 
-日期：2026-10-23。状态：**本地源码、隔离测试数据库、真实 Chrome 与模拟 API 浏览器回归已通过；未部署、未关闭工单。** 关联：GitHub `LazyYang-v/docs#5`，前置 [#3](customer-service-issue-3-acceptance.md) 已关闭。范围仍为虚构演示数据与两名受控演示买家。
+日期：2026-10-23。状态：**本地源码、隔离测试数据库、隔离演示容器、真实 Chrome 与模拟 API 浏览器回归均已通过；GitHub 证据评论与关闭操作待用户明确授权。** 关联：GitHub `LazyYang-v/docs#5`，前置 [#3](customer-service-issue-3-acceptance.md) 已关闭。范围仍为虚构演示数据与两名受控演示买家。
 
 ## 实现边界
 
 - **身份只取服务端会话**：订单路径要求认证会话且买家在演示白名单内。匿名订单问题返回 `401 authentication_required`，不创建或返回任何订单内容；请求参数中没有 `user_id`、`buyer_id`、邮箱或电话等身份选择字段，额外字段被拒绝。退出、会话过期、页面跨会话复用和账号切换均由现有会话/页面绑定拒绝。
-- **明确选择**：`/messages` 只接受 `text` 与 `selected_order_id` 二者之一。列表无论零、一或多单都返回候选卡，不自动打开唯一或最近订单；只有用户点击候选卡产生的 `selected_order_id` 才调用 `get_my_order`。候选卡字段严格为订单号、创建时间、商品摘要、金额和状态。
+- **明确选择**：`/messages` 要求至少提供一个 `text` 或 `selected_order_id`；两者同时出现时以显式选择为准。列表无论零、一或多单都返回候选卡，不自动打开唯一或最近订单；只有用户点击候选卡产生的 `selected_order_id` 才调用 `get_my_order`。候选卡字段严格为订单号、创建时间、商品摘要、金额和状态。
 - **买家范围过滤**：`list_my_orders` 的订单号过滤始终附加当前 `buyer.id` 条件。他人订单、不存在订单和格式合法但无匹配的订单号统一得到 `empty` 与固定文案“未找到可访问订单”；详情选择他人或不存在的订单统一 `403 resource_unavailable` 与同一文案，不区分归属。订单号文本过滤与 `selected_order_id` 共用每买家 10 次/分钟探测额度，另有既有的会话 20/分钟、IP 60/分钟查询额度；候选 `has_more=true` 时只提示输入订单号收窄，不自动翻页或自动选择。
 - **字段裁剪**：详情只返回订单号、状态、金额、商品摘要、支付截止、关闭原因、已保存物流公司/运单号/发货时间。逐项商品明细、创建时间、地址、电话、收件人、图片、用户 ID、邮箱不进入详情或客服响应；没有实时轨迹、承运商查询或预计送达字段，前端明确标注“不包含实时轨迹或预计送达时间”。
 - **独立于政策**：订单路径是确定性流程，不调用模型、不依赖政策检索成功。订单工具通过现有私有 in-process MCP 2025-03-26 序列化边界执行，每轮最多两次订单调用，严格校验参数与返回 envelope。
@@ -23,8 +23,16 @@
 | 前端构建 | `npm run build` | 通过 |
 | 类型检查（变更模块） | `uv run --project backend ty check customer_service_orders.py customer_service_consultations.py customer_service_product_mcp.py customer_service_products.py customer_service.py` | 0 diagnostics |
 | 付费/外部调用 | — | **0 次模型调用、0 次 WeKnora 请求、0 元**；订单路径无模型 transport |
+| 隔离演示容器 API 矩阵 | 私有验收脚本（登录、页面、消息与商城写入口） | 34/34 通过；匿名 401、零自动详情、候选五字段、显式详情九字段、已保存物流、跨买家/不存在统一 403、他人订单号统一 empty、退出失效、旧页面复用 403、11 次探测 429、未支持诉求不声称办理 |
+| 隔离演示容器真实 Chrome | `SHOP_DEMO_ORDER_FIXTURE_FILE=… node e2e/customer-service-demo.mjs` | 通过；两买家各自看到本人订单候选，逐单显式点击后才出详情，已保存物流可见，地址/电话不出现在页面，移动视口无横向溢出 |
+| 隔离演示容器安全日志 | 读取 `customer-service-logs` 卷 | 74 条记录仅允许字段；工具为 `list_products`/`get_product`/`search_policy`/`list_my_orders`/`get_my_order`；订单号、商品名、地址、电话、运单号、邮箱与哨兵 0 命中；目录 0700、文件 0600、UID 10001 |
+| 隔离演示镜像 | 从提交 `1fb95b1` 的干净 `git archive` 构建 | API 镜像 `sha256:9dd4ce28b590f9a3a1a0a9b10bff7d4cd4cca6c6e948717452f173413a89cc7c`；重启后 fixture 校验通过、健康检查 200 |
 
-测试仅使用 `127.0.0.1:55445/shop_test` 及隔离真实 Chrome；`SHOP_ALLOW_TEST_DATABASE_RESET=1` 只在测试子进程设置。未修改开发库/演示库，未启动或重建演示容器，未写 GitHub。
+本地测试仅使用 `127.0.0.1:55445/shop_test` 及隔离真实 Chrome；`SHOP_ALLOW_TEST_DATABASE_RESET=1` 只在测试子进程设置。容器验收只触碰隔离演示项目 `shop-customer-service-demo`，未修改开发库，未触发模型或 WeKnora 请求。
+
+### 演示容器订单数据
+
+两名演示买家通过真实登录与结算 API 创建 2/1 笔虚构订单（同一地址快照），未直接复制开发库；其中一单写入虚构物流公司“虚构速运”、运单号 `DEMO-ORDERS-001` 作为已保存物流样例。演示初始化器要求商品库存与 fixture 完全一致，因此创建订单后将两件参与商品的库存恢复到 fixture 值，并重启 API 验证启动校验通过。重新创建 `shop-web` 是因为单文件 bind mount 在宿主文件被替换后仍指向旧 inode，页面哈希与宿主不一致；强制重建后页面哈希一致。此操作只影响隔离演示项目。
 
 ## Acceptance criteria 对照
 
@@ -39,4 +47,4 @@
 - 未连接真实物流承运商；只显示商城订单中已保存的物流公司、运单号和发货时间。
 - 订单读取路径不调用模型；本票不实现取消、退款、发券、催发货或转人工，也不改动订单写操作与确认凭据契约。
 - 订单号在演示中使用订单 UUID 作为可展示订单号，未新增业务订单编号字段或迁移。
-- 未做容器内验收、部署或 RTO 实测；本记录只证明本地源码与隔离测试数据库/真实 Chrome 行为。
+- 已部署到隔离演示容器并完成 API/真实 Chrome 验收；未重做恢复演练或订单级 RTO 实测。演示订单为虚构数据，不能作为真实用户或生产库存依据。

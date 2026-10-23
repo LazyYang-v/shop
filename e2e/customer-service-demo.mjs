@@ -58,9 +58,39 @@ try {
     let queries = 0
     page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/api/customer-service/')) queries++ })
     await page.getByLabel('请输入想咨询的问题').fill('LOG-SENTINEL-private-body-do-not-store')
+    const freeText = page.waitForResponse(r => new URL(r.url()).pathname === '/api/customer-service/messages')
     await page.getByRole('button', { name: '发送', exact: true }).click()
-    await page.getByText('亲，商品客服功能尚未开放。您可以先在商城商品目录中查询商品信息。', { exact: true }).waitFor()
-    assert.equal(queries, 0)
+    assert.equal((await freeText).status(), 200)
+    await page.locator('#messages .bubble', { hasText: '请提供完整演示商品名称，并询问价格或库存' }).last().waitFor()
+    assert.equal(queries, 1)
+    if (process.env.SHOP_DEMO_ORDER_FIXTURE_FILE) {
+      const orders = JSON.parse(await readFile(process.env.SHOP_DEMO_ORDER_FIXTURE_FILE, 'utf8'))
+      const expected = email === 'buyer-one@customer-service.example'
+        ? orders.buyer_one_orders : orders.buyer_two_orders
+      const listing = page.waitForResponse(r => new URL(r.url()).pathname === '/api/customer-service/messages')
+      await page.locator('#query-orders').click()
+      assert.equal((await listing).status(), 200)
+      const selection = page.locator('#messages button', { hasText: '的详情' })
+      await selection.first().waitFor()
+      assert.equal(await selection.count(), expected.length)
+      assert.ok(!(await page.locator('#messages').innerText()).includes('不包含实时轨迹或预计送达时间'))
+      const details = []
+      for (let index = 0; index < expected.length; index++) {
+        const detail = page.waitForResponse(r => new URL(r.url()).pathname === '/api/customer-service/messages')
+        await selection.nth(index).click()
+        assert.equal((await detail).status(), 200)
+        const body = await page.locator('#messages').innerText()
+        assert.ok(body.includes('不包含实时轨迹或预计送达时间'))
+        details.push(body)
+      }
+      const combined = details.join('\n')
+      assert.ok(!combined.includes('演示路') && !combined.includes('13800138000'))
+      if (email.startsWith('buyer-one')) {
+        assert.ok(combined.includes('虚构速运') && combined.includes('DEMO-ORDERS-001'))
+      } else {
+        assert.ok(combined.includes('暂无已保存物流信息'))
+      }
+    }
     if (process.env.SHOP_DEMO_SCREENSHOT) {
       await page.screenshot({ path: process.env.SHOP_DEMO_SCREENSHOT, fullPage: true })
     }
@@ -69,7 +99,7 @@ try {
   const anonymous = await browser.newContext()
   assert.equal((await anonymous.request.get(`${origin}/api/customer-service/products`)).status(), 401)
   await anonymous.close()
-  console.log('Demo browser acceptance passed: both buyers, admin/anonymous rejection, fixture/API facts, registration, list/detail/consultation, mobile and free-text isolation.')
+  console.log('Demo browser acceptance passed: both buyers, admin/anonymous rejection, fixture/API facts, registration, list/detail/consultation, order selection, controlled free-text clarification, mobile viewport.')
 } finally {
   await browser.close()
 }

@@ -29,6 +29,15 @@
 4. 查询不得触发模型请求、WeKnora请求或任何额外付费调用；安全日志只含`search_policy`、受控错误码、计数与耗时，不含政策正文、来源、用户输入或秘密。
 5. 合成政策只用于本隔离演示；不得把fixture内容、截图或答复表示为真实商城政策承诺。真实政策路径仍需批准的真实政策、来源治理和WeKnora端点核实，另票授权。
 
+## 启动后的本人订单验收
+
+1. 两买家分别登录，询问“我的订单”只得到候选卡；候选严格为订单号、创建时间、商品摘要、金额和状态，即使只有一笔也不自动打开详情。
+2. 只有显式提交候选订单号才返回详情；详情严格为约定九字段，显示商城已保存的物流公司/运单号/发货时间，不出现地址、电话、收件人或邮箱，也不存在实时轨迹/预计送达字段或文案。
+3. 另一买家选择不属于自己的订单、选择不存在订单、输入他人订单号均得到统一“未找到可访问订单”，不泄露订单归属；订单号文本过滤与显式选择合计 10 次/分钟后返回 429。
+4. 匿名订单问题返回 401 登录引导且无订单数据；退出后旧页面/旧订单请求被拒绝，新匿名页面仍提示登录；账号切换后旧页面与旧订单不可读。
+5. 退款、发券、催发货、转人工不返回成功，不声称已办理；客服回复与页面均不承诺实时物流。
+6. 订单候选/详情只经确定性工具读取，不触发模型、WeKnora 或额外付费调用；安全日志只含允许字段，无订单号、商品名、地址、电话、运单号或身份。
+
 ## 恢复演练
 
 只能在另行获准的新空卷中执行，不删除或覆盖原卷。计时从开始恢复至两买家可重新登录、fixture核验成功且商品查询返回正确事实为止。
@@ -50,10 +59,11 @@
 | 项目 | 当前记录 |
 |---|---|
 | 新演示服务启动 | 3服务运行；http://127.0.0.1:18011/customer-service.html，真实健康检查及两买家/管理员/匿名浏览器验收通过 |
-| API/数据库固定镜像 | 当前主演示API已重建为本地镜像ID sha256:7cd1878d5b7986eb20164b9ce1dfe71eb90b0501294fd60266dd954665ca3fe8（tag shop-customer-service-demo-api:20261023-policy，源码提交1cf69a1的干净归档）；先前镜像ID sha256:28f55f2a2915…保留但不运行。PostgreSQL固定digest，卷未重建 |
+| API/数据库固定镜像 | 当前主演示API已重建为本地镜像ID sha256:9dd4ce28b590f9a3a1a0a9b10bff7d4cd4cca6c6e948717452f173413a89cc7c（tag shop-customer-service-demo-api:20261023-orders，源码提交1fb95b1的干净归档）；先前镜像ID sha256:7cd1878d5b79…保留但不运行。PostgreSQL固定digest，卷未重建 |
 | 商品fixture | products.v1.json，4件虚构商品；hash见Compose及README |
-| 合成政策fixture | policies.synthetic.v1.json，合成标签/权威登记/索引残留/研究资料；hash `79a224…3163`。已在主演示容器内完成API矩阵（发货v2、包邮残留unavailable、礼品包装no_match、歧义clarification）及真实Chrome桌面/移动验收；0模型调用、0 WeKnora请求。容器日志20条仅允许字段，哨兵/政策正文0命中；API无WeKnora/模型/令牌环境变量且仅连接internal网络 |
+| 合成政策fixture | policies.synthetic.v1.json，合成标签/权威登记/索引残留/研究资料；hash `79a224…3163`。已在主演示容器内完成API矩阵（发货v2、包邮残留unavailable、礼品包装no_match、歧义clarification）及真实Chrome桌面/移动验收；0模型调用、0 WeKnora请求。容器日志74条仅允许字段，哨兵/政策正文0命中；API无WeKnora/模型/令牌环境变量且仅连接internal网络 |
+| 本人订单（#5） | 两演示买家通过真实登录/结算API创建2/1笔虚构订单，其中一单写入虚构物流“虚构速运”/`DEMO-ORDERS-001`；库存恢复到fixture后重启API，fixture校验与健康检查通过。容器API矩阵34/34：匿名401、候选五字段且不自动详情、显式详情九字段、已保存物流、跨买家与不存在统一403、他人订单号统一empty、退出/旧页面失效、11次探测429、未支持诉求不声称办理。真实Chrome（`e2e/customer-service-demo.mjs` + `SHOP_DEMO_ORDER_FIXTURE_FILE`）两买家逐单显式点击后显示详情，地址电话不出现。单文件bind mount在宿主文件替换后仍指向旧inode，强制重建`shop-web`后页面哈希与宿主一致 |
 | 公开注册与代理配置 | 真实API注册403、两买家商品事实/咨询通过，管理员403/匿名401；Nginx -t通过，转发头清空、无上游重试，API禁proxy headers |
-| 完整文件日志出口 | API日志目录0700/UID10001、分片0600；最初11条记录仅允许字段，无自由文本哨兵；本次合成政策验收后为20条，工具含search_policy，政策正文/哨兵0命中。API临时目录空；API/Web只读根、Docker logging=none。PostgreSQL collector关闭、statement=none、duration=-1、stderr出口；Web临时文件只在tmpfs，access关闭、error=/dev/null |
+| 完整文件日志出口 | API日志目录0700/UID10001、分片0600；最初11条记录仅允许字段，无自由文本哨兵；合成政策验收后为20条，工具含search_policy；#5订单验收后为74条，工具含`list_my_orders`/`get_my_order`，订单号/商品名/地址/电话/运单号/邮箱0命中。API临时目录空；API/Web只读根、Docker logging=none。PostgreSQL collector关闭、statement=none、duration=-1、stderr出口；Web临时文件只在tmpfs，access关闭、error=/dev/null |
 | 恢复开始/结束/耗时 | 新卷迁移、fixture初始化与三服务启动7.454秒；从恢复状态文件创建至浏览器及资格失效检查全部完成的保守总耗时124.32秒，包含人工检查间隔，低于1800秒目标。旧会话401、旧密码401、旧咨询410，新密码及商品查询200；运行期咨询/证据未恢复。临时机器记录见恢复私有目录recovery-result.json，不含秘密 |
 | 模型收费请求 | 本轮0；真实调用单独审批请求数及金额 |

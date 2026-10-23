@@ -13,8 +13,9 @@ from uuid import UUID
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.exc import DBAPIError
 
-from shop_api.customer_service import CustomerServiceUnavailable
+from shop_api.customer_service import CustomerServiceUnavailable, QueryDeadlineExceeded
 from shop_api.customer_service_products import ListProductsArguments, GetProductArguments
 
 class ProductMCPFailure(CustomerServiceUnavailable):
@@ -109,7 +110,8 @@ def product_mcp_app(tools):
         except Exception as error:
             category = ('resource_unavailable' if isinstance(error, HTTPException) and error.status_code == 403
                         else 'invalid_input' if isinstance(error, HTTPException) and error.status_code == 422
-                        else 'mcp_timeout' if isinstance(error, (TimeoutError, httpx.TimeoutException))
+                        else 'mcp_timeout' if (isinstance(error, (QueryDeadlineExceeded, TimeoutError, httpx.TimeoutException))
+                                               or isinstance(error, DBAPIError) and getattr(error.orig, 'sqlstate', None) == '57014')
                         else 'invalid_input' if isinstance(error, ValueError)
                         else 'mcp_unavailable')
             return JSONResponse({'jsonrpc': '2.0', 'id': identifier, 'error': {

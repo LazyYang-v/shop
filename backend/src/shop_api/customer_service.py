@@ -27,6 +27,10 @@ class CustomerServiceUnavailable(RuntimeError):
     pass
 
 
+class QueryDeadlineExceeded(CustomerServiceUnavailable):
+    pass
+
+
 @dataclass(frozen=True)
 class ProductFixture:
     id: str
@@ -186,13 +190,15 @@ class QueryDeadline:
         remaining = self._expires_at - time.monotonic()
         if maximum_seconds is not None:
             remaining = min(remaining, maximum_seconds)
-        if remaining <= 0 or session.bind is None or session.bind.dialect.name != "postgresql":
+        if remaining <= 0:
+            raise QueryDeadlineExceeded
+        if session.bind is None or session.bind.dialect.name != "postgresql":
             raise CustomerServiceUnavailable
         session.execute(text("SELECT set_config('statement_timeout', :timeout, true)"), {"timeout": str(max(1, int(remaining * 1000)))})
 
     def check(self) -> None:
         if time.monotonic() >= self._expires_at:
-            raise CustomerServiceUnavailable
+            raise QueryDeadlineExceeded
 
 
 def cleanup_rate_limits(session_factory, now: datetime) -> int:

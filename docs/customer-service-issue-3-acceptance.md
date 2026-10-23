@@ -39,6 +39,16 @@ A后续独立修复f13a47e已合并：同页所有CSRF bootstrap与POST/续期�
 
 累计真实提供方请求0、金额0，C未执行。仍仅整句受控语法及in-process ASGI HTTP；无公网/独立MCP进程/真实提供方验证。
 
+## B最终超时分类补正（2026-10-23）
+
+仅补正残余商品MCP超时分类：`QueryDeadline.check/apply`期限耗尽抛出专用`QueryDeadlineExceeded`（仍属`CustomerServiceUnavailable`）；MCP将其及真实`DBAPIError.orig.sqlstate == '57014'`映射为`mcp_timeout`。普通不可用异常和其他SQLSTATE不按消息文本猜测超时；错误响应仍只含固定文案/允许错误码，不带数据库语句、异常详情或身份。商品读取原有最多2次尝试（含重试）未改变。
+
+先RED后GREEN：`test_mcp_statement_timeout_preserves_category_and_two_attempt_budget`在真实授权PostgreSQL中每次设置10ms `statement_timeout`后执行`pg_sleep(0.05)`，经真实ProductTools/savepoint重试及序列化MCP，确认两次真实57014最终为`mcp_timeout`，后续工具额度已耗尽；`test_mcp_expired_query_deadline_is_timeout`使用明确过期的QueryDeadline走真实工具/MCP，也先观察到错误的`mcp_unavailable`后修正。`test_query_deadline_rejects_expired_session[apply/check]`断言专用超时类型；`test_mcp_unrelated_dependency_failures_remain_unavailable`覆盖普通不可用及真实42501/08006，错误文本含私人哨兵和timeout仍返回固定`mcp_unavailable`且不重试。
+
+本次精确命令：`uv run --project backend python -I /tmp/shop-phase-a-tests.py backend/tests/test_customer_service_products.py backend/tests/test_customer_service_guards.py backend/tests/test_customer_service_consultations.py backend/tests/test_customer_service_model_transport.py backend/tests/test_customer_service_model_limits.py backend/tests/test_customer_service_model_budget.py -q`：112 passed、2 warnings、23.13s。两项警告仍为Starlette/httpx及Alembic配置弃用。helper仅向测试子进程传入127.0.0.1:55445/shop_test及reset开关；`git diff --check`通过。本次不重跑全套或浏览器，不启动服务器，不调用提供方、不部署、不写Issue。
+
+限制：真实超时语句由测试在数据库读取边界注入，证明真实PostgreSQL取消→DBAPIError→现有重试→MCP分类，不冒称普通商品SELECT在真实负载下自然耗时超限。PostgreSQL57014表示query_canceled，数据库主动取消也归同一受控超时类别；无任意阻塞Python强制取消证明。仍仅本地in-process ASGI MCP、受控整句语法；外部MCP/真实提供方验证与C均未执行，累计真实调用0、金额0。
+
 ## 五条验收要求与证据
 
 | 原始要求 | 核对结果 | 实现及验证证据 |

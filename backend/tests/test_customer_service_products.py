@@ -59,6 +59,70 @@ def test_read_retry_consumes_same_two_attempt_budget(client, monkeypatch, sqlsta
         assert len(attempts) == expected
 
 
+def test_mcp_statement_timeout_preserves_category_and_two_attempt_budget(client, monkeypatch):
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+    from shop_api.customer_service_product_mcp import ProductMCP, ProductMCPFailure
+
+    with client.app.state.session_factory() as session:
+        sqlstates = []
+        def timed_out_read(*args, **kwargs):
+            session.execute(text("SET LOCAL statement_timeout = '10ms'"))
+            try:
+                session.execute(text('SELECT pg_sleep(0.05) /* PRIVATE_IDENTITY_SENTINEL */'))
+            except DBAPIError as error:
+                sqlstates.append(error.orig.sqlstate)
+                raise
+        monkeypatch.setattr(session, 'scalars', timed_out_read)
+        mcp = ProductMCP(ProductTools(session, {}, str(uuid4()), client.app.state.clock))
+        mcp.initialize()
+        with pytest.raises(ProductMCPFailure) as failure:
+            mcp.call('list_products', {})
+        assert failure.value.code == 'mcp_timeout'
+        assert str(failure.value) == 'mcp_timeout'
+        assert sqlstates == ['57014', '57014']
+        with pytest.raises(ProductMCPFailure) as exhausted:
+            mcp.call('get_product', {'product_id': str(uuid4())})
+        assert exhausted.value.code == 'mcp_unavailable'
+        assert sqlstates == ['57014', '57014']
+
+
+def test_mcp_expired_query_deadline_is_timeout(client):
+    from shop_api.customer_service import QueryDeadline
+    from shop_api.customer_service_product_mcp import ProductMCP, ProductMCPFailure
+
+    with client.app.state.session_factory() as session:
+        mcp = ProductMCP(ProductTools(session, {}, str(uuid4()), client.app.state.clock,
+                                      deadline=QueryDeadline(-1)))
+        mcp.initialize()
+        with pytest.raises(ProductMCPFailure) as failure:
+            mcp.call('list_products', {})
+        assert failure.value.code == 'mcp_timeout'
+
+
+@pytest.mark.parametrize('sqlstate', [None, '42501', '08006'])
+def test_mcp_unrelated_dependency_failures_remain_unavailable(client, monkeypatch, sqlstate):
+    from sqlalchemy import text
+    from shop_api.customer_service import CustomerServiceUnavailable
+    from shop_api.customer_service_product_mcp import ProductMCP, ProductMCPFailure
+
+    with client.app.state.session_factory() as session:
+        attempts = []
+        def unavailable_read(*args, **kwargs):
+            attempts.append(1)
+            if sqlstate is not None:
+                session.execute(text(f"DO $$ BEGIN RAISE EXCEPTION 'PRIVATE_IDENTITY_SENTINEL timeout' USING ERRCODE = '{sqlstate}'; END $$"))
+            raise CustomerServiceUnavailable('PRIVATE_IDENTITY_SENTINEL timeout')
+        monkeypatch.setattr(session, 'scalars', unavailable_read)
+        mcp = ProductMCP(ProductTools(session, {}, str(uuid4()), client.app.state.clock))
+        mcp.initialize()
+        with pytest.raises(ProductMCPFailure) as failure:
+            mcp.call('list_products', {})
+        assert failure.value.code == 'mcp_unavailable'
+        assert str(failure.value) == 'mcp_unavailable'
+        assert len(attempts) == 1
+
+
 def test_product_tools_share_two_call_budget(client):
     fixture = ProductFixture('00000000-0000-0000-0000-000000000001', '春日轻盈针织开衫', '女装', '129.00', 24, True)
     with client.app.state.session_factory() as session:

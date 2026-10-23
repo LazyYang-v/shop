@@ -103,15 +103,19 @@ def test_fixture_rejects_unknown_product_facts_and_more_than_twenty_items(client
         check_fixture(client.app.state.session_factory(), str(fixture), hashlib.sha256(raw).hexdigest())
 
 
-def test_query_deadline_rejects_expired_session(client, monkeypatch):
+@pytest.mark.parametrize('operation', ['apply', 'check'])
+def test_query_deadline_rejects_expired_session(client, monkeypatch, operation):
     import shop_api.customer_service as customer_service
 
     moments = iter((10.0, 11.0))
     monkeypatch.setattr(customer_service.time, "monotonic", lambda: next(moments))
     deadline = QueryDeadline(0.5)
     with client.app.state.session_factory() as session:
-        with pytest.raises(CustomerServiceUnavailable):
-            deadline.apply(session)
+        with pytest.raises(customer_service.QueryDeadlineExceeded):
+            if operation == 'apply':
+                deadline.apply(session)
+            else:
+                deadline.check()
 
 
 def test_safe_log_writer_omits_unapproved_fields_and_prunes_expired_partitions(tmp_path):

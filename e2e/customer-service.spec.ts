@@ -125,6 +125,56 @@ for (const status of [401, 403, 422, 429]) {
   })
 }
 
+test('product bootstrap waits for consultation POST and renewal before rotating CSRF', async ({ page }) => {
+  await page.clock.install()
+  let rotations = 0
+  let blocked = false
+  let release: (() => void) | undefined
+  await page.route('**/api/auth/csrf', route => {
+    rotations += 1
+    return route.fulfill({ json: { csrf_token: `token-${rotations}` } })
+  })
+  await page.route('**/api/customer-service/pages', route => route.fulfill({ status: 201, json: {
+    ...response('ok'), data: { page_instance_id: 'page-test', consultation_id: 'consultation-test', handoff_token: 'a'.repeat(43) },
+  } }))
+  await page.route('**/api/customer-service/messages', async route => {
+    const token = route.request().headers()['x-csrf-token']
+    blocked = true
+    await new Promise<void>(resolve => { release = resolve })
+    expect(token).toBe(`token-${rotations}`)
+    await route.fulfill({ json: { ...response('ok'), data: { reply: '消息完成', cards: [], citations: [] } } })
+  })
+  await page.route('**/api/customer-service/products?*', route => route.fulfill({ json: response('ok') }))
+  await page.goto('/customer-service.html')
+  await page.getByRole('button', { name: '开始商品咨询', exact: true }).click()
+  await expect.poll(() => blocked).toBe(true)
+  const before = rotations
+  await page.getByRole('button', { name: '查看演示商品', exact: true }).click()
+  // A browser task barrier allows the GET handler to reach its bootstrap.
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+  expect(rotations).toBe(before)
+  release!()
+  await expect(page.getByRole('log')).toContainText('消息完成')
+  await expect.poll(() => rotations).toBe(before + 1)
+  blocked = false
+  await page.route('**/api/customer-service/pages/renew', async route => {
+    const token = route.request().headers()['x-csrf-token']
+    blocked = true
+    await new Promise<void>(resolve => { release = resolve })
+    expect(token).toBe(`token-${rotations}`)
+    await route.fulfill({ json: { ...response('ok'), data: {} } })
+  })
+  await page.clock.fastForward(30000)
+  await expect.poll(() => blocked).toBe(true)
+  const beforeRenew = rotations
+  await page.getByRole('button', { name: '查看演示商品', exact: true }).click()
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 0)))
+  expect(rotations).toBe(beforeRenew)
+  release!()
+  await expect.poll(() => rotations).toBe(beforeRenew + 1)
+  await expect(page.getByRole('log')).not.toContainText('咨询页面已过期')
+})
+
 test('consultation binds controlled messages and never automatically replays a POST', async ({ page }) => {
   const bodies: Record<string, unknown>[] = []
   await page.route('**/api/auth/csrf', route => route.fulfill({ json: { csrf_token: 'test-csrf' } }))

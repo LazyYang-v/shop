@@ -193,7 +193,18 @@
     window.addEventListener('pageshow', event => {
       if (event.persisted) invalidateConsultation();
     });
-    async function consultationPost(path, payload) {
+    // Keep every CSRF rotation in this page behind the POST using its token.
+    // Recover the queue after failures; never replay a request.
+    let sessionLane = Promise.resolve();
+    function withSessionLane(action) {
+      const result = sessionLane.then(action);
+      sessionLane = result.catch(() => {});
+      return result;
+    }
+    function consultationPost(path, payload) {
+      return withSessionLane(() => consultationPostInLane(path, payload));
+    }
+    async function consultationPostInLane(path, payload) {
       const csrfResponse = await fetch('/api/auth/csrf', { credentials: 'same-origin', cache: 'no-store' });
       if (!csrfResponse.ok) throw new Error('Authentication unavailable');
       const csrf = await csrfResponse.json();
@@ -280,8 +291,10 @@
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 8000);
       try {
-        const sessionResponse = await fetch('/api/auth/csrf', { credentials: 'same-origin', cache: 'no-store', signal: controller.signal });
-        if (!sessionResponse.ok) throw new Error('Session unavailable');
+        await withSessionLane(async () => {
+          const sessionResponse = await fetch('/api/auth/csrf', { credentials: 'same-origin', cache: 'no-store', signal: controller.signal });
+          if (!sessionResponse.ok) throw new Error('Session unavailable');
+        });
         const path = productId
           ? `/api/customer-service/products/${encodeURIComponent(productId)}`
           : `/api/customer-service/products?page=${page}&page_size=10`;

@@ -300,12 +300,30 @@ def build_consultation_router(session_dependency, current_session):
                                   client_message_id=UUID(payload.client_message_id), body_hash=body_hash, response=claim))
         db.commit()
         if name is None:
-            _lock_session(db, record, request.app.state.clock())
-            page, consultation = _page(db, record, payload.page_instance_id, request.app.state.clock())
-            policy = re.fullmatch(r'(?:请问)?(?:政策|退货政策|商城政策|检索服务)(?:是什么|可用吗|有哪些)?[？?。]?', payload.text.strip())
-            response = _envelope(request, 'unavailable' if policy else 'needs_clarification',
-                                 {'reply': '政策和检索服务暂不可用' if policy else '请提供完整演示商品名称，并询问价格或库存；政策和检索服务暂不可用。', 'cards': [], 'citations': []},
-                                 **({'code': 'policy_unavailable'} if policy else {}))
+            now = request.app.state.clock()
+            _lock_session(db, record, now)
+            page, consultation = _page(db, record, payload.page_instance_id, now)
+            from shop_api.customer_service_policy import SYNTHETIC_LABEL, answer_policy_question
+            started = time.monotonic()
+            registry = request.app.state.customer_service_policy_registry
+            index = request.app.state.customer_service_policy_index
+            answer = answer_policy_question(payload.text, registry, index, now)
+            if answer is None:
+                response = _envelope(request, 'needs_clarification',
+                                     {'reply': '请提供完整演示商品名称，并询问价格或库存；也可咨询标注为虚构演示的政策主题。',
+                                      'cards': [], 'citations': []})
+            else:
+                data = {'reply': answer.reply, 'cards': [], 'citations': list(answer.citations)}
+                if registry is not None and index is not None:
+                    data.update({'synthetic': True, 'policy_notice': SYNTHETIC_LABEL})
+                response = _envelope(request, answer.status, data,
+                                     **({'code': answer.code} if answer.code else {}))
+                if answer.status != 'needs_clarification':
+                    error = {'ok': '', 'no_match': 'policy_no_match', 'conflict': 'policy_conflict',
+                             'unavailable': 'policy_unavailable'}[answer.status]
+                    request.app.state.customer_service_log_writer.write(
+                        request.state.customer_service_request_id, 'search_policy', error,
+                        int((time.monotonic() - started) * 1000), len(answer.citations), now)
             db.get(ConsultationMessage, key).response = response
             page.last_used_at = consultation.last_used_at = request.app.state.clock()
             db.commit()

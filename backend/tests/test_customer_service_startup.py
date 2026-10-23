@@ -84,3 +84,75 @@ def test_customer_service_startup_fails_closed_without_demo_mode_or_matching_dig
             assert app.state.customer_service_enabled is False
 
     asyncio.run(check_invalid_lifespan())
+
+
+def _policy_fixture():
+    from pathlib import Path
+    import hashlib
+    path = Path(__file__).resolve().parents[2] / "deploy/customer-service-demo/policies.synthetic.v1.json"
+    return str(path), hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_startup_loads_only_verified_synthetic_policy_fixture(client, tmp_path, monkeypatch):
+    fixture_path, digest, log_directory, buyer_ids = configured_fixture(tmp_path, client)
+    policy_path, policy_digest = _policy_fixture()
+    monkeypatch.setenv("SHOP_CUSTOMER_SERVICE_DEMO_MODE", "1")
+    monkeypatch.setenv("SHOP_CUSTOMER_SERVICE_FIXTURE_PATH", fixture_path)
+    monkeypatch.setenv("SHOP_CUSTOMER_SERVICE_FIXTURE_SHA256", digest)
+    monkeypatch.setenv("SHOP_CUSTOMER_SERVICE_LOG_DIRECTORY", log_directory)
+    monkeypatch.setenv("SHOP_CUSTOMER_SERVICE_BUYER_IDS", buyer_ids)
+    monkeypatch.setenv("SHOP_CUSTOMER_SERVICE_POLICY_PATH", policy_path)
+    monkeypatch.setenv("SHOP_CUSTOMER_SERVICE_POLICY_SHA256", policy_digest)
+
+    app = create_app(database_url=client.app.state.session_factory.kw["bind"].url.render_as_string(hide_password=False))
+
+    async def check_lifespan():
+        async with app.router.lifespan_context(app):
+            assert app.state.customer_service_enabled is True
+            assert app.state.customer_service_policy_registry is not None
+            assert app.state.customer_service_policy_index is not None
+
+    asyncio.run(check_lifespan())
+
+
+def test_startup_keeps_policy_closed_when_not_configured(client, tmp_path, monkeypatch):
+    fixture_path, digest, log_directory, buyer_ids = configured_fixture(tmp_path, client)
+    monkeypatch.setenv("SHOP_CUSTOMER_SERVICE_DEMO_MODE", "1")
+    monkeypatch.setenv("SHOP_CUSTOMER_SERVICE_FIXTURE_PATH", fixture_path)
+    monkeypatch.setenv("SHOP_CUSTOMER_SERVICE_FIXTURE_SHA256", digest)
+    monkeypatch.setenv("SHOP_CUSTOMER_SERVICE_LOG_DIRECTORY", log_directory)
+    monkeypatch.setenv("SHOP_CUSTOMER_SERVICE_BUYER_IDS", buyer_ids)
+    monkeypatch.delenv("SHOP_CUSTOMER_SERVICE_POLICY_PATH", raising=False)
+    monkeypatch.delenv("SHOP_CUSTOMER_SERVICE_POLICY_SHA256", raising=False)
+
+    app = create_app(database_url=client.app.state.session_factory.kw["bind"].url.render_as_string(hide_password=False))
+
+    async def check_lifespan():
+        async with app.router.lifespan_context(app):
+            assert app.state.customer_service_enabled is True
+            assert app.state.customer_service_policy_registry is None
+            assert app.state.customer_service_policy_index is None
+
+    asyncio.run(check_lifespan())
+
+
+def test_startup_fails_closed_on_partial_or_invalid_policy_configuration(client, tmp_path, monkeypatch):
+    fixture_path, digest, log_directory, buyer_ids = configured_fixture(tmp_path, client)
+    policy_path, policy_digest = _policy_fixture()
+    monkeypatch.setenv("SHOP_CUSTOMER_SERVICE_DEMO_MODE", "1")
+    monkeypatch.setenv("SHOP_CUSTOMER_SERVICE_FIXTURE_PATH", fixture_path)
+    monkeypatch.setenv("SHOP_CUSTOMER_SERVICE_FIXTURE_SHA256", digest)
+    monkeypatch.setenv("SHOP_CUSTOMER_SERVICE_LOG_DIRECTORY", log_directory)
+    monkeypatch.setenv("SHOP_CUSTOMER_SERVICE_BUYER_IDS", buyer_ids)
+    monkeypatch.setenv("SHOP_CUSTOMER_SERVICE_POLICY_PATH", policy_path)
+
+    app = create_app(database_url=client.app.state.session_factory.kw["bind"].url.render_as_string(hide_password=False))
+    async def check_disabled():
+        async with app.router.lifespan_context(app):
+            assert app.state.customer_service_enabled is False
+            assert app.state.customer_service_policy_registry is None
+    asyncio.run(check_disabled())
+
+    monkeypatch.setenv("SHOP_CUSTOMER_SERVICE_POLICY_SHA256", "0" * 64)
+    app = create_app(database_url=client.app.state.session_factory.kw["bind"].url.render_as_string(hide_password=False))
+    asyncio.run(check_disabled())

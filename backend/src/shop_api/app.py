@@ -98,6 +98,10 @@ def create_app(database_url: str | None = None, *, synthetic_product_exchange=No
     app.state.customer_service_log_writer = None
     app.state.customer_service_fixtures = {}
     app.state.customer_service_buyer_ids = set()
+    # Synthetic policy internals stay None unless an explicit verified demo
+    # fixture is configured. There is no WeKnora client, URL, token or real path.
+    app.state.customer_service_policy_registry = None
+    app.state.customer_service_policy_index = None
     # Trusted server constructor seam only. No env/browser/provider activation.
     app.state.customer_service_synthetic_transport = None
     if synthetic_product_exchange is not None and product_transport is not None:
@@ -138,6 +142,20 @@ def create_app(database_url: str | None = None, *, synthetic_product_exchange=No
             writer.verify()
             # Expired files from downtime are removed before admission is enabled.
             writer.prune(application.state.clock())
+            policy_path = os.getenv("SHOP_CUSTOMER_SERVICE_POLICY_PATH")
+            policy_digest = os.getenv("SHOP_CUSTOMER_SERVICE_POLICY_SHA256")
+            if policy_path or policy_digest:
+                if not policy_path or not policy_digest:
+                    raise CustomerServiceUnavailable
+                from shop_api.customer_service_policy import (
+                    PolicyPublicationError, load_synthetic_policy_fixture,
+                )
+                try:
+                    registry, index = load_synthetic_policy_fixture(policy_path, policy_digest)
+                except PolicyPublicationError:
+                    raise CustomerServiceUnavailable from None
+                application.state.customer_service_policy_registry = registry
+                application.state.customer_service_policy_index = index
             application.state.customer_service_fixtures = fixtures
             application.state.customer_service_buyer_ids = buyer_ids
             if application.state.customer_service_synthetic_transport is not None:

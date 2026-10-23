@@ -131,8 +131,9 @@ class SafeLogWriter:
     def write(self, request_id: str, tool: str, error: str, duration_ms: int, count: int, now: datetime) -> None:
         if not _REQUEST_ID.fullmatch(request_id):
             raise ValueError("Invalid request identifier")
-        safe_tool = tool if tool in {"list_products", "get_product"} else "unknown"
-        safe_error = error if error in {"", "dependency_unavailable", "budget_exhausted", "rate_limited"} else "internal_error"
+        safe_tool = tool if tool in {"list_products", "get_product", "search_policy"} else "unknown"
+        safe_error = error if error in {"", "dependency_unavailable", "budget_exhausted", "rate_limited",
+                                        "policy_no_match", "policy_conflict", "policy_unavailable"} else "internal_error"
         record = {"request_id": request_id, "tool": safe_tool, "error": safe_error,
                   "duration_ms": max(0, int(duration_ms)), "count": max(0, int(count)),
                   "recorded_at": now.astimezone(UTC).isoformat()}

@@ -91,7 +91,7 @@
       <div class="messages" id="messages" role="log" aria-label="客服聊天记录" aria-live="polite">
         <button class="history" type="button">点击查看历史咨询记录</button>
         <div class="message"><span class="avatar" aria-hidden="true">👩🏻‍💼</span><div class="bubble">亲，我是智能小蜜，很高兴为您服务！</div></div>
-        <div class="message"><span class="avatar" aria-hidden="true">👩🏻‍💼</span><div class="bubble">访客可匿名查询虚构演示商品。请点击“查看演示商品”，或开始商品咨询后选择商品查询价格和库存。匿名会话自建立起30分钟有效。可问“有哪些商品？”或完整商品名称加“多少钱”“有货吗”“价格和库存”；其他问题会请您澄清。政策和检索服务暂不可用。</div></div>
+        <div class="message"><span class="avatar" aria-hidden="true">👩🏻‍💼</span><div class="bubble">访客可匿名查询虚构演示商品。请点击“查看演示商品”，或开始商品咨询后选择商品查询价格和库存。匿名会话自建立起30分钟有效。可问“有哪些商品？”或完整商品名称加“多少钱”“有货吗”“价格和库存”；也可咨询标注为“虚构演示政策（非真实商城政策）”的合成规则，例如“演示商城多久发货？”。其他问题会请您澄清。</div></div>
         <div class="quick-questions" aria-label="热门咨询">
           <button class="quick-question" id="start-consultation" type="button">开始商品咨询<span class="chevron" aria-hidden="true"></span></button>
           <button class="quick-question" id="list-products" type="button">查看演示商品<span class="chevron" aria-hidden="true"></span></button>
@@ -248,6 +248,17 @@
         if (!result) return;
         if (!result.data || typeof result.data.reply !== 'string' || !Array.isArray(result.data.cards)) throw new Error('Invalid consultation');
         appendMessage(`${result.data.reply}\n查询时间：${result.queried_at}\n请求标识：${result.request_id}`);
+        if (result.data.synthetic === true) {
+          if (typeof result.data.policy_notice !== 'string' || result.data.policy_notice !== '虚构演示政策（非真实商城政策）') throw new Error('Invalid policy notice');
+          appendMessage(result.data.policy_notice);
+        }
+        if (result.data.citations !== undefined) {
+          if (!Array.isArray(result.data.citations) || result.data.citations.length > 3) throw new Error('Invalid citations');
+          for (const citation of result.data.citations) {
+            if (!validCitation(citation)) throw new Error('Invalid citation');
+            appendMessage(citationFacts(citation));
+          }
+        }
         for (const card of result.data.cards) {
           if (card.type === 'product_page' && /^查看演示商品第([1-9][0-9]?|100)页$/.test(card.selection_text)) {
             const button = document.createElement('button');
@@ -287,6 +298,24 @@
         && typeof product.price === 'string' && /^\d+\.\d{2}$/.test(product.price)
         && Number.isInteger(product.stock) && product.stock >= 0
         && typeof product.is_listed === 'boolean';
+    }
+    function validCitation(citation) {
+      return citation && citation.synthetic === true
+        && citation.label === '虚构演示政策（非真实商城政策）'
+        && /^[0-9a-f-]{36}$/i.test(citation.policy_id)
+        && Number.isInteger(citation.version) && citation.version >= 1
+        && typeof citation.source_label === 'string' && citation.source_label.length > 0 && citation.source_label.length <= 160
+        && typeof citation.source_ref === 'string' && citation.source_ref.startsWith('synthetic://')
+        && typeof citation.effective_from === 'string' && Number.isFinite(Date.parse(citation.effective_from))
+        && (citation.effective_to === null
+          || (typeof citation.effective_to === 'string' && Number.isFinite(Date.parse(citation.effective_to))))
+        && typeof citation.content === 'string' && citation.content.length > 0 && citation.content.length <= 4000
+        && typeof citation.content_sha256 === 'string' && /^[0-9a-f]{64}$/.test(citation.content_sha256);
+    }
+    function citationFacts(citation) {
+      return `政策依据：${citation.source_label}\n政策标识：${citation.policy_id}\n版本：v${citation.version}\n`
+        + `生效期：${citation.effective_from} 至 ${citation.effective_to || '长期'}\n`
+        + `来源：${citation.source_ref}\n正文：${citation.content}`;
     }
     async function queryProducts(productId = null, page = 1) {
       if (queryingProducts) return;

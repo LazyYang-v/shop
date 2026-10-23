@@ -43,6 +43,9 @@ def test_customer_service_browser_queries_real_isolated_catalog(client, tmp_path
     monkeypatch.setenv('SHOP_CUSTOMER_SERVICE_FIXTURE_SHA256', hashlib.sha256(raw).hexdigest())
     monkeypatch.setenv('SHOP_CUSTOMER_SERVICE_LOG_DIRECTORY', str(logs))
     monkeypatch.setenv('SHOP_CUSTOMER_SERVICE_BUYER_IDS', ','.join(buyer_ids))
+    policy = Path(__file__).resolve().parents[2] / 'deploy/customer-service-demo/policies.synthetic.v1.json'
+    monkeypatch.setenv('SHOP_CUSTOMER_SERVICE_POLICY_PATH', str(policy))
+    monkeypatch.setenv('SHOP_CUSTOMER_SERVICE_POLICY_SHA256', hashlib.sha256(policy.read_bytes()).hexdigest())
     url = client.app.state.session_factory.kw['bind'].url.render_as_string(hide_password=False)
     from sqlalchemy import text
     with client.app.state.session_factory() as db:
@@ -101,9 +104,10 @@ def test_customer_service_browser_queries_real_isolated_catalog(client, tmp_path
         for reservation_id in created_reservations:
             db.execute(text('DELETE FROM customer_service_model_reservations WHERE id=:id'), {'id': reservation_id})
     assert len(exchanges) == 4
-    for forbidden in ['PRIVATE_SENTINEL', '春日', '00000000-0000-0000-0000-000000000001', password, test_clock_key, *emails]:
+    for forbidden in ['PRIVATE_SENTINEL', 'PRIVATE_POLICY_SENTINEL', 'PRIVATE_RESEARCH_SENTINEL',
+                      '春日', '00000000-0000-0000-0000-000000000001', password, test_clock_key, *emails]:
         assert all(forbidden not in exchange for exchange in exchanges)
         assert all(forbidden not in path.read_text() for path in logs.glob('*.jsonl'))
     records = [json.loads(line) for path in logs.glob('customer-service-*.jsonl') for line in path.read_text().splitlines()]
-    assert {record['tool'] for record in records} == {'list_products', 'get_product'}
+    assert {record['tool'] for record in records} == {'list_products', 'get_product', 'search_policy'}
     assert all(set(record) == {'request_id', 'tool', 'error', 'duration_ms', 'count', 'recorded_at'} for record in records)

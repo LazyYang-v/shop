@@ -15,7 +15,7 @@
 
 所有基础服务位于pending-demo-gates profile，默认没有可启动服务；商城API单独位于pending-demo-guards profile，基础profile不会启用API。显式指定服务也可能激活profile，profile不是授权或运行保护，不能在运行门槛未满足时启动。本候选已接线源码实际读取的SHOP_CUSTOMER_SERVICE_DEMO_MODE、FIXTURE_PATH、FIXTURE_SHA256、BUYER_IDS、LOG_DIRECTORY以及SHOP_REGISTRATION_ENABLED；仍须构建并审核包含对应代码的新API镜像，不默认使用当前镜像。源码与Compose接线不代表已验证镜像行为。API显式使用--no-proxy-headers和--no-access-log。
 
-未提供Web商城入口或WeKnora管理UI，MCP代理拒绝其他路径；首次管理员、知识库、受限端点的初始化需单独设计本地流程，当前禁用注册。不复制现有数据库或创建真实政策。
+未提供Web商城入口或WeKnora管理UI，MCP代理拒绝其他路径；首次管理员、知识库、受限端点的初始化需单独设计本地流程，当前禁用注册。不复制现有数据库或创建真实政策；合成政策仅来自本目录受hash约束的fixture，不写入WeKnora。
 
 DEMO_WEKNORA_CONFIG必须指向另行准备并审查的演示专用config.yaml，不直接挂载现有实例配置。缺文件禁止自动创建。该文件尚未生成：需核对固定镜像的配置字段、可选后端与密钥引用，避免带入现有模型凭据。internal网络会阻断外部模型/embedding，需在获准能力实现后准备受控出口，不把network internal当作模型已能工作。
 
@@ -24,6 +24,8 @@ DEMO_WEKNORA_CONFIG必须指向另行准备并审查的演示专用config.yaml�
 ## 版本化fixture与显式初始化（未执行）
 
 products.v1.json包含4个虚构商品，使用API启动check_fixture的精确字段格式；文件原始字节SHA256为b730b65266d096918f8f5e085c960ed5acccf6378b3b1e222bfa379141169b1b。修改任何字节必须同步审核代码/Compose中的digest。首商品是现有0002迁移的虚构针织开衫；其余三个明确标注演示，零库存商品用于边界检查。不创建订单、地址、会话或政策，不复制开发库。
+
+policies.synthetic.v1.json只包含**标注为“虚构演示政策（非真实商城政策）”的合成规则**，不是真实商城政策。文件原始字节SHA256为79a224ffd33037578402a706095e063cb80d4a0498fe0a77d6f049409ab83163。它提供合成权威登记（policy_id、source、version、生效区间、状态、KB+文档标识和规范正文哈希）及进程内检索索引替身；索引残留、旧版本、未来版本、已删除残留和研究资料用于验证拒绝路径。启动时校验文件hash、合成标签、`synthetic://`来源、规范正文哈希和发布区间冲突；检索只按KB+文档ID映射回登记。**不连接、不写入当前共享WeKnora，不包含端点/令牌，真实政策答复路径保持关闭。** 修改文件必须同步Compose、预检和验收记录。
 
 固定身份如下；只有前两项进入客服白名单。
 
@@ -53,7 +55,7 @@ Docker Compose v5.4.0使用纯合成密码和不存在的占位配置路径执�
 
 ## 后续实施顺序与回退
 
-1. 审核本次fixture、初始化器、API保护及共享计数代码并完成父会话协调的测试；另行完成演示config.yaml，模型保持关闭，search_policy保持未配置。
+1. 审核本次fixture、初始化器、API保护及共享计数代码并完成父会话协调的测试；另行完成演示config.yaml，模型保持关闭，真实政策/WeKnora入口保持未配置，只有受hash约束的合成政策fixture可被加载。
 2. 重新解析配置、检查digest/端口/卷，确认只会创建新项目资源。仅在获准启动后初始化新数据库，不调用shop_test重置或复制shop_dev。
 3. 验证容器健康、MCP只读及限定库、错误分类、静态及实际超时/限流；失败保持入口关闭。不为测试停止既有Redis或WeKnora。
 4. 以合成哨兵验证账号/输入/日志边界及隔离恢复，记录实际RTO。配置解析不能替代API/浏览器验收。

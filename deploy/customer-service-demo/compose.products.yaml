@@ -27,12 +27,19 @@ services:
       SHOP_CUSTOMER_SERVICE_DEMO_MODE: "1"
       SHOP_CUSTOMER_SERVICE_FIXTURE_PATH: /app/demo/products.v1.json
       SHOP_CUSTOMER_SERVICE_FIXTURE_SHA256: b730b65266d096918f8f5e085c960ed5acccf6378b3b1e222bfa379141169b1b
+      SHOP_CUSTOMER_SERVICE_POLICY_PATH: /app/demo/policies.synthetic.v1.json
+      SHOP_CUSTOMER_SERVICE_POLICY_SHA256: 79a224ffd33037578402a706095e063cb80d4a0498fe0a77d6f049409ab83163
       SHOP_CUSTOMER_SERVICE_BUYER_IDS: de100000-0000-4000-8000-000000000001,de100000-0000-4000-8000-000000000002
       SHOP_CUSTOMER_SERVICE_LOG_DIRECTORY: /var/log/shop-customer-service
     volumes:
       - type: bind
         source: ./products.v1.json
         target: /app/demo/products.v1.json
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./policies.synthetic.v1.json
+        target: /app/demo/policies.synthetic.v1.json
         read_only: true
         bind: {create_host_path: false}
       - customer-service-logs:/var/log/shop-customer-service

@@ -23,7 +23,7 @@
 
 ## 商城补偿的可执行验证
 
-当前合成补偿代码为 `backend/src/shop_api/customer_service_policy.py`，公共接口验收位于 `backend/tests/test_customer_service_policy.py`，浏览器经 `/api/customer-service/messages` 观察结果。`docs/policy-relevance-offline.py` 仅是独立参考模型；其结果单列，不能替代商城 API 或真实平台证据。
+当前合成补偿代码为 `backend/src/shop_api/customer_service_policy.py`，公共接口验收位于 `backend/tests/test_customer_service_policy.py`，浏览器经 `/api/customer-service/messages` 观察结果。最终受测代码 `a4478a6` 的完整后端 399 项通过，包含合成政策、组合故障和桌面/移动真实 Chrome；页面模拟 28 项另列。真实提供方与 WeKnora 请求均为 0，不能据此解除下述外部门槛。`docs/policy-relevance-offline.py` 仅是独立参考模型；其结果单列，不能替代商城 API 或真实平台证据。
 
 | 补偿 | 固定场景/预期 | 实现与验证状态 |
 |---|---|---|

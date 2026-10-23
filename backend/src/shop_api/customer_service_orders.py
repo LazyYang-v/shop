@@ -115,7 +115,8 @@ class OrderTools:
     def verify_result(name, result):
         return verify_order_result(name, result)
 
-    def __init__(self, session: Session, buyer, request_id: str, clock: Callable[[], datetime], *, deadline=None):
+    def __init__(self, session: Session, buyer, request_id: str, clock: Callable[[], datetime], *, deadline=None,
+                 retry_attempt: Callable[[], None] | None = None):
         self._session = session
         self._buyer = buyer
         self._request_id = request_id
@@ -123,6 +124,7 @@ class OrderTools:
         self._calls = 0
         self._seen: set[tuple[str, str]] = set()
         self._deadline = deadline or QueryDeadline(45.0)
+        self._retry_attempt = retry_attempt
 
     def call(self, name: Literal["list_my_orders", "get_my_order"], arguments: dict) -> dict:
         if name not in self.tool_names:
@@ -216,7 +218,12 @@ class OrderTools:
                 sqlstate = getattr(error.orig, "sqlstate", None)
                 if attempt or sqlstate not in {"40001", "40P01", "55P03", "57014"}:
                     raise
-                # A retry consumes the turn's two-call order budget.
+                # Subqueries belong to the same tool attempt; retrying either
+                # the order or its items still consumes a classified attempt.
+                if self._retry_attempt is not None:
+                    self._retry_attempt()
+                if self._calls >= 2:
+                    raise HTTPException(status_code=503, detail="订单工具额度已用完") from None
                 self._calls += 1
         raise HTTPException(status_code=503, detail="订单查询暂不可用")
 

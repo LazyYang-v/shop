@@ -398,7 +398,10 @@ test('selected buyer order receives composite refund limits and per-item partial
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 })
 
-test('buyer confirmation cancels a pending order and verifies its execution evidence', async ({ page }) => {
+for (const confirmationResponse of ['executed', 'lost', 'processing']) {
+test(`buyer confirmation handles ${confirmationResponse} responses and verifies its execution evidence`, async ({ page }) => {
+  const needsReconciliation = confirmationResponse !== 'executed'
+  if (needsReconciliation) await page.clock.install()
   const orderNumber = '11111111-1111-4111-8111-111111111111'
   const otherOrderNumber = '44444444-4444-4444-8444-444444444444'
   const operationId = '33333333-3333-4333-8333-333333333333'
@@ -435,6 +438,14 @@ test('buyer confirmation cancels a pending order and verifies its execution evid
         code: 'transaction_rolled_back', data: { operation_id: operationId } } })
       return
     }
+    if (confirmationResponse === 'lost') {
+      await route.abort('connectionreset')
+      return
+    }
+    if (confirmationResponse === 'processing') {
+      await route.fulfill({ status: 425, json: { ...response('processing'), code: 'processing', data: null } })
+      return
+    }
     await route.fulfill({ json: { ...response('executed'), status: 'executed', data: {
       operation_id: operationId, order_id: orderNumber, order_status: 'closed',
       close_reason: 'buyer_cancelled', evidence: { order_id: orderNumber, status: 'closed', close_reason: 'buyer_cancelled' },
@@ -442,7 +453,9 @@ test('buyer confirmation cancels a pending order and verifies its execution evid
   })
   await page.route('**/api/customer-service/cancel/reconcile', async route => {
     reconcileBodies.push(route.request().postDataJSON())
-    await route.fulfill({ status: 425, json: { ...response('processing'), code: 'processing', data: null } })
+    await route.fulfill({ json: { ...response('executed'), status: 'executed', data: {
+      operation_id: operationId, evidence: { order_id: orderNumber, status: 'closed', close_reason: 'buyer_cancelled' },
+    } } })
   })
   await page.route('**/api/customer-service/messages', async route => {
     const body = route.request().postDataJSON()
@@ -499,15 +512,25 @@ test('buyer confirmation cancels a pending order and verifies its execution evid
   expect(confirmBodies).toHaveLength(1)
   expect(reconcileBodies).toHaveLength(0)
   await confirmButton.click()
+  if (needsReconciliation) {
+    await expect(log).toContainText(confirmationResponse === 'lost'
+      ? '响应未能确认；页面不会重发取消。' : '取消请求仍在处理中；页面不会重发取消。')
+    await page.clock.fastForward(2250)
+    await expect.poll(() => reconcileBodies.length).toBe(1)
+  }
   await expect(log).toContainText('取消成功：本人订单已关闭，原因是买家取消。')
+  await expect(page.locator('.confirmation-card .invalid-note')).toHaveText('本次取消已由商城订单与操作证据确认。')
+  await expect(log).not.toContainText('响应未能确认；页面不会重发取消。')
+  await expect(log).not.toContainText('取消请求仍在处理中；页面不会重发取消。')
   expect(confirmBodies).toHaveLength(2)
   expect(confirmBodies[0]).toEqual({ page_instance_id: 'page-cancel', consultation_id: 'consultation-cancel',
     operation_id: operationId, confirmation_token: token })
   expect(confirmBodies[1]).toEqual(confirmBodies[0])
-  expect(reconcileBodies).toHaveLength(0)
+  expect(reconcileBodies).toHaveLength(needsReconciliation ? 1 : 0)
   expect(bodies).toHaveLength(4)
   await expect(log).toContainText('状态：待付款')
 })
+}
 
 test('unclear cancellation confirmation reconciles without replay and offers one manual check', async ({ page }) => {
   await page.clock.install()

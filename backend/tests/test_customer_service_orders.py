@@ -1,8 +1,11 @@
 """Buyer-scoped order reads through the customer-service message seam."""
 
+from contextlib import contextmanager
 import hashlib
 import json
 from datetime import timedelta
+from types import SimpleNamespace
+import time
 from uuid import UUID, uuid4
 
 import pytest
@@ -43,8 +46,21 @@ def order_client(client, tmp_path):
                            "X-CSRF-Token": client.get("/api/auth/csrf").json()["csrf_token"]})
     client.customer_service_buyer_id = buyer_id
     clear_testserver_rate(client)
-    yield client
-    clear_testserver_rate(client)
+    try:
+        yield client
+    finally:
+        # Failed synthetic exchanges deliberately retain uncertain reservations.
+        # Close workers before removing only this fixture buyer's accounting.
+        for name in ["customer_service_synthetic_transport", "customer_service_composite_transport"]:
+            transport = getattr(client.app.state, name)
+            if transport is not None:
+                transport.close()
+        with client.app.state.session_factory.begin() as db:
+            session_ids = list(db.scalars(text("SELECT id FROM auth_sessions WHERE user_id=:buyer_id"),
+                                          {"buyer_id": UUID(buyer_id)}))
+            if session_ids:
+                db.execute(text("DELETE FROM customer_service_model_reservations WHERE session_id=ANY(:ids)"), {"ids": session_ids})
+        clear_testserver_rate(client)
 
 
 def make_order(client, *, status="pending_payment"):
@@ -69,6 +85,340 @@ def make_other_buyer(client):
     other.headers.update({"Origin": "http://testserver",
                           "X-CSRF-Token": other.get("/api/auth/csrf").json()["csrf_token"]})
     return other
+
+
+@contextmanager
+def synthetic_composition_client(client, exchange):
+    from fastapi.testclient import TestClient
+    from shop_api.app import create_app
+    app = create_app(database_url=client.app.state.session_factory.kw["bind"].url.render_as_string(hide_password=False),
+                     synthetic_consultation_exchange=exchange)
+    with TestClient(app) as composed:
+        for name in ["customer_service_enabled", "customer_service_fixtures", "customer_service_buyer_ids",
+                     "customer_service_log_writer", "customer_service_policy_registry", "customer_service_policy_index"]:
+            setattr(app.state, name, getattr(client.app.state, name))
+        app.state.customer_service_composite_transport._budget._approved_buyer_ids = frozenset(app.state.customer_service_buyer_ids)
+        composed.cookies.update(client.cookies)
+        composed.headers.update(client.headers)
+        yield composed
+
+
+def composite_tool_response(calls):
+    return {"object": "chat.completion", "choices": [{"finish_reason": "tool_calls", "message": {
+        "role": "assistant", "content": None, "tool_calls": [{"id": f"provider_{uuid4().hex}", "type": "function",
+            "function": {"name": name, "arguments": json.dumps(arguments)}} for name, arguments in calls]}}],
+        "usage": {"prompt_tokens": 100, "completion_tokens": 20}}
+
+
+@pytest.mark.parametrize("stage", ["no_facts", "order", "proposal", "proposal_response", "delivery"])
+def test_composite_deadline_persists_verified_partial_and_revokes_proposals(order_client, monkeypatch, stage):
+    from sqlalchemy import event
+    from shop_api import customer_service, customer_service_cancel, customer_service_composite, customer_service_consultations
+    from shop_api import customer_service_model_transport, customer_service_model_turn, customer_service_product_mcp
+    client = order_client
+    order_id = make_order(client)
+    elapsed = [0.0]
+    modules = [customer_service, customer_service_composite, customer_service_consultations,
+               customer_service_model_transport, customer_service_model_turn, customer_service_product_mcp]
+    for module in modules:
+        monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: time.monotonic() + elapsed[0]))
+    attempts = []
+    delivery = [False]
+    issued_ids = []
+    monkeypatch.setattr(customer_service_cancel, "uuid4", lambda: issued_ids.append(uuid4()) or issued_ids[-1])
+    def exchange(payload, *_):
+        attempts.append(payload)
+        if stage == "no_facts" or len(attempts) == (3 if stage in {"proposal", "proposal_response", "delivery"} else 2):
+            if stage == "delivery":
+                elapsed[0] = 44.0
+                delivery[0] = True
+                return {"object": "chat.completion", "choices": [{"finish_reason": "stop", "message": {
+                    "role": "assistant", "content": '{"intent":"composite"}'}}],
+                    "usage": {"prompt_tokens": 100, "completion_tokens": 20}}
+            elapsed[0] = 46.0
+            raise TimeoutError("PRIVATE_TIMEOUT_SENTINEL")
+        if stage == "delivery":
+            elapsed[0] = 15.0 * len(attempts)
+        if len(attempts) == 1:
+            return composite_tool_response([("get_my_order", {"order_ref": "order_1"})])
+        return composite_tool_response([("propose_cancel", {"order_ref": "order_1"})] if stage in {"proposal", "proposal_response"} else [("list_products", {})])
+    with synthetic_composition_client(client, exchange) as composed:
+        created = page(composed)
+        old_card = composed.post(PREFIX + "/messages", json=message_payload(
+            created, text="申请取消订单", selected_order_id=order_id)).json()["confirmation_card"]
+        composed.app.state.customer_service_fixtures[PRODUCT_ID] = ProductFixture(
+            PRODUCT_ID, "春日轻盈针织开衫", "女装", "129.00", 23, True)
+        engine = composed.app.state.session_factory.kw["bind"]
+        def expire_during_delivery(connection, cursor, statement, parameters, context, executemany):
+            if (delivery[0] and "FROM auth_sessions" in statement and "FOR UPDATE" in statement
+                    or stage == "proposal_response" and "INSERT INTO customer_service_cancel_operations" in statement):
+                elapsed[0] = 46.0
+        event.listen(engine, "after_cursor_execute", expire_during_delivery)
+        try:
+            question = "快递未到且想退款" if stage in {"proposal", "proposal_response"} else "查看商品列表；查询我的订单"
+            payload = message_payload(created, text=question)
+            response = composed.post(PREFIX + "/messages", json=payload)
+        finally:
+            event.remove(engine, "after_cursor_execute", expire_during_delivery)
+        if stage == "no_facts":
+            assert response.status_code == 503
+            assert "data" not in response.json() or response.json()["data"] is None
+            revoked = composed.post(PREFIX + "/cancel/confirm", json={
+                "page_instance_id": created["page_instance_id"], "consultation_id": created["consultation_id"],
+                "operation_id": old_card["operation_id"], "confirmation_token": old_card["confirmation_token"]})
+            assert revoked.status_code == 409
+            assert client.get("/api/orders/" + order_id).json()["status"] == "pending_payment"
+            return
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result["status"] == "partial" and result["code"] == "turn_timeout"
+        assert [card["type"] for card in result["data"]["cards"]] == (["order_detail", "product"] if stage == "delivery" else ["order_detail"])
+        assert result["data"]["cards"][0]["order"]["order_number"] == order_id
+        expected_parts = [("get_my_order", "ok")]
+        if stage == "delivery":
+            expected_parts.append(("list_products", "ok"))
+        assert [(part["source"], part["status"]) for part in result["data"]["parts"]] == expected_parts + [("composition", "unavailable")]
+        assert all(part["queried_at"] for part in result["data"]["parts"])
+        assert "confirmation_card" not in result and "PRIVATE_TIMEOUT_SENTINEL" not in response.text
+        assert composed.post(PREFIX + "/messages", json=payload).json() == result
+        # A fresh application must replay the committed result without another model exchange.
+        assert client.post(PREFIX + "/messages", json=payload).json() == result
+        terminal = composed.post(PREFIX + "/cancel/confirm", json={
+            "page_instance_id": created["page_instance_id"], "consultation_id": created["consultation_id"],
+            "operation_id": old_card["operation_id"], "confirmation_token": old_card["confirmation_token"]})
+        assert terminal.status_code == 409
+        if stage in {"proposal", "proposal_response"}:
+            # Observe the new proposal through reconciliation, without reading its DB row.
+            reconciled = composed.post(PREFIX + "/cancel/reconcile", json={
+                "page_instance_id": created["page_instance_id"], "consultation_id": created["consultation_id"],
+                "operation_id": str(issued_ids[-1])})
+            assert reconciled.status_code == 200 and reconciled.json()["status"] == "expired"
+            assert reconciled.json()["data"]["evidence"]["reason"] == "credential_revoked"
+        assert client.get("/api/orders/" + order_id).json()["status"] == "pending_payment"
+        assert client.get("/api/products/" + PRODUCT_ID).json()["stock"] == 23
+        assert len(attempts) == (3 if stage in {"proposal", "delivery"} else 2)
+
+
+@pytest.mark.parametrize("budget_fallback", [False, True])
+@pytest.mark.parametrize("fault", ["fixture", "dependency"])
+def test_composite_later_product_failure_preserves_selected_order(order_client, budget_fallback, fault):
+    from sqlalchemy import event
+    client = order_client
+    order_id = make_order(client)
+    attempts = []
+    def exchange(*_):
+        attempts.append(True)
+        raise AssertionError("An exhausted model budget must not send a request")
+    @contextmanager
+    def active_client():
+        if budget_fallback:
+            with synthetic_composition_client(client, exchange) as composed:
+                yield composed
+        else:
+            yield client
+    with active_client() as composed:
+        created = page(composed)
+        card = composed.post(PREFIX + "/messages", json=message_payload(
+            created, text="申请取消订单", selected_order_id=order_id)).json()["confirmation_card"]
+        if budget_fallback:
+            with composed.app.state.session_factory.begin() as db:
+                db.execute(text("""INSERT INTO customer_service_model_days(scope, day, tokens)
+                    SELECT cast(session_id AS text), CURRENT_DATE, 50000 FROM customer_service_pages WHERE id=:id
+                    ON CONFLICT(scope, day) DO UPDATE SET tokens=50000"""), {"id": UUID(created["page_instance_id"])})
+        if fault == "dependency":
+            composed.app.state.customer_service_fixtures[PRODUCT_ID] = ProductFixture(
+                PRODUCT_ID, "春日轻盈针织开衫", "女装", "129.00", 23, True)
+        engine = composed.app.state.session_factory.kw["bind"]
+        def unavailable_catalog(connection, cursor, statement, parameters, context, executemany):
+            if "FROM products" in statement:
+                from sqlalchemy.exc import DBAPIError
+                raise DBAPIError(statement, parameters, RuntimeError("PRIVATE_DATABASE_SENTINEL"))
+        if fault == "dependency":
+            event.listen(engine, "before_cursor_execute", unavailable_catalog)
+        try:
+            payload = message_payload(created, text="春日轻盈针织开衫价格和库存；查询我的订单")
+            response = composed.post(PREFIX + "/messages", json=payload)
+        finally:
+            if fault == "dependency":
+                event.remove(engine, "before_cursor_execute", unavailable_catalog)
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result["status"] == "partial" and result["code"] == "mcp_unavailable"
+        assert [item["type"] for item in result["data"]["cards"]] == ["order_detail"]
+        assert result["data"]["cards"][0]["order"]["order_number"] == order_id
+        assert [(part["source"], part["status"]) for part in result["data"]["parts"]] == [
+            ("get_my_order", "ok"), ("composition", "unavailable")]
+        assert result["data"]["parts"][-1]["code"] == "mcp_unavailable"
+        assert all(part["queried_at"] for part in result["data"]["parts"])
+        assert "confirmation_card" not in result and "PRIVATE_DATABASE_SENTINEL" not in response.text
+        assert composed.post(PREFIX + "/messages", json=payload).json() == result
+        assert client.post(PREFIX + "/messages", json=payload).json() == result
+        expired = composed.post(PREFIX + "/cancel/confirm", json={
+            "page_instance_id": created["page_instance_id"], "consultation_id": created["consultation_id"],
+            "operation_id": card["operation_id"], "confirmation_token": card["confirmation_token"]})
+        assert expired.status_code == 409
+        assert client.get("/api/orders/" + order_id).json()["status"] == "pending_payment"
+        assert client.get("/api/products/" + PRODUCT_ID).json()["stock"] == 23
+        assert attempts == []
+
+
+@pytest.mark.parametrize("category, failure_position", [
+    ("order", "first"), ("order", "second"), ("order", "items_after_retry"),
+    ("product", "first"), ("product", "second"),
+])
+def test_composite_read_retries_share_classified_and_total_budget(order_client, category, failure_position):
+    from sqlalchemy import event
+    from sqlalchemy.exc import DBAPIError
+    from shop_api.customer_service_policy import load_policy_data
+    from test_customer_service_policy import active_shipping, fixture, policy_index_document
+    client = order_client
+    order_id = make_order(client)
+    client.app.state.customer_service_fixtures[PRODUCT_ID] = ProductFixture(
+        PRODUCT_ID, "春日轻盈针织开衫", "女装", "129.00", 23, True)
+    registry, index = load_policy_data(fixture(policies=[active_shipping()], policy_index=[
+        policy_index_document("doc-demo-shipping-v2")]))
+    client.app.state.customer_service_policy_registry, client.app.state.customer_service_policy_index = registry, index
+    scripts = [
+        [("search_policy", {"policy_ref": "policy_1"}), ("list_products", {}), ("get_product", {"product_ref": "product_1"})],
+        [("list_my_orders", {}), ("get_my_order", {"order_ref": "order_1"})],
+        [("propose_cancel", {"order_ref": "order_1"})],
+    ] if category == "order" else [
+        [("search_policy", {"policy_ref": "policy_1"}), ("list_my_orders", {}), ("get_my_order", {"order_ref": "order_1"})],
+        [("propose_cancel", {"order_ref": "order_1"}), ("list_products", {}), ("get_product", {"product_ref": "product_1"})],
+    ]
+    exchanges = []
+    def exchange(payload, *_):
+        exchanges.append(payload)
+        if len(exchanges) <= len(scripts):
+            return composite_tool_response(scripts[len(exchanges) - 1])
+        return {"object": "chat.completion", "choices": [{"finish_reason": "stop", "message": {
+            "role": "assistant", "content": '{"intent":"composite"}'}}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 20}}
+    with synthetic_composition_client(client, exchange) as composed:
+        created = page(composed)
+        assert composed.post(PREFIX + "/messages", json=message_payload(
+            created, text=None, selected_order_id=order_id)).status_code == 200
+        attempts = []
+        item_failures = []
+        def transient_read(connection, cursor, statement, parameters, context, executemany):
+            # Retry faults occur at the DB boundary; public cards/parts show which
+            # reads succeeded and whether a forbidden continuation was scheduled.
+            if ("FROM orders" in statement or "FROM products" in statement) and "FOR UPDATE" not in statement:
+                table = "order" if "FROM orders" in statement else "product"
+                attempts.append(table)
+                position = attempts.count(category)
+                if table == category and position == (2 if failure_position == "second" else 1):
+                    raise DBAPIError(statement, parameters, SimpleNamespace(sqlstate="40001"))
+            elif category == "order" and failure_position == "items_after_retry" and "FROM order_items" in statement:
+                item_failures.append(True)
+                raise DBAPIError(statement, parameters, SimpleNamespace(sqlstate="40P01"))
+        engine = composed.app.state.session_factory.kw["bind"]
+        event.listen(engine, "before_cursor_execute", transient_read)
+        try:
+            payload = message_payload(created, text="演示商城多久发货？；春日轻盈针织开衫价格和库存；申请取消订单")
+            response = composed.post(PREFIX + "/messages", json=payload)
+        finally:
+            event.remove(engine, "before_cursor_execute", transient_read)
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result["status"] == "partial" and result["code"] == "tool_budget_exhausted"
+        assert "confirmation_card" not in result
+        sources = {part["source"] for part in result["data"]["parts"]}
+        if category == "order":
+            assert sources == ({"search_policy", "list_products", "get_product", "composition"} |
+                               ({"list_my_orders"} if failure_position != "items_after_retry" else set()))
+            assert all(card["type"] != "order_detail" for card in result["data"]["cards"])
+            assert item_failures == ([True] if failure_position == "items_after_retry" else [])
+        else:
+            assert sources == {"search_policy", "list_my_orders", "get_my_order", "list_products", "composition"}
+            assert "get_product" not in sources and "propose_cancel" not in sources
+        assert attempts.count(category) == 2
+        assert len(attempts) <= 4  # plus policy and optional proposal: total at most six
+        assert composed.post(PREFIX + "/messages", json=payload).json() == result
+        assert client.get("/api/orders/" + order_id).json()["status"] == "pending_payment"
+        assert client.get("/api/products/" + PRODUCT_ID).json()["stock"] == 23
+        assert len(exchanges) == 2
+
+
+@pytest.mark.parametrize("items_fail", [False, True])
+def test_standalone_order_read_retries_stop_at_two_attempts(order_client, items_fail):
+    from sqlalchemy import event
+    from sqlalchemy.exc import DBAPIError
+    client = order_client
+    order_id = make_order(client)
+    created = page(client)
+    order_reads, item_reads = [], []
+    def transient_read(connection, cursor, statement, parameters, context, executemany):
+        if "FROM orders" in statement:
+            order_reads.append(True)
+            if len(order_reads) == 1:
+                raise DBAPIError(statement, parameters, SimpleNamespace(sqlstate="40001"))
+        elif "FROM order_items" in statement:
+            item_reads.append(True)
+            if items_fail:
+                raise DBAPIError(statement, parameters, SimpleNamespace(sqlstate="40P01"))
+    engine = client.app.state.session_factory.kw["bind"]
+    event.listen(engine, "before_cursor_execute", transient_read)
+    try:
+        response = client.post(PREFIX + "/messages", json=message_payload(created, text="查询我的订单"))
+    finally:
+        event.remove(engine, "before_cursor_execute", transient_read)
+    assert len(order_reads) == 2 and len(item_reads) == 1
+    if items_fail:
+        assert_error(response, 503, "mcp_unavailable")
+    else:
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["cards"][0]["order"]["order_number"] == order_id
+    recovered = client.post(PREFIX + "/messages", json=message_payload(created, text="查询我的订单"))
+    assert recovered.status_code == 200 and recovered.json()["status"] == "ok"
+    assert client.get("/api/orders/" + order_id).json()["status"] == "pending_payment"
+
+
+@pytest.mark.parametrize("revocation", ["session", "buyer", "page", "selection"])
+def test_composite_timeout_revalidates_current_access_before_partial_delivery(order_client, monkeypatch, revocation):
+    from sqlalchemy import delete, event
+    from shop_api import customer_service, customer_service_composite, customer_service_consultations
+    from shop_api import customer_service_model_transport, customer_service_model_turn, customer_service_product_mcp
+    from shop_api.identity import User
+    client = order_client
+    order_id = make_order(client)
+    elapsed = [0.0]
+    for module in [customer_service, customer_service_composite, customer_service_consultations,
+                   customer_service_model_transport, customer_service_model_turn, customer_service_product_mcp]:
+        monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: time.monotonic() + elapsed[0]))
+    attempts = []
+    def exchange(*_):
+        attempts.append(True)
+        if len(attempts) == 1:
+            return composite_tool_response([("get_my_order", {"order_ref": "order_1"})])
+        elapsed[0] = 46.0
+        raise TimeoutError("PRIVATE_TIMEOUT_SENTINEL")
+    with synthetic_composition_client(client, exchange) as composed:
+        created = page(composed)
+        assert composed.post(PREFIX + "/messages", json=message_payload(
+            created, text=None, selected_order_id=order_id)).status_code == 200
+        engine = composed.app.state.session_factory.kw["bind"]
+        def revoke_during_delivery(connection, cursor, statement, parameters, context, executemany):
+            if elapsed[0] and "FROM auth_sessions" in statement and "FOR UPDATE" in statement:
+                if revocation == "session":
+                    connection.execute(update(AuthSession).where(AuthSession.user_id == UUID(client.customer_service_buyer_id)).values(revoked_at=client.app.state.clock()))
+                elif revocation == "buyer":
+                    connection.execute(update(User).where(User.id == UUID(client.customer_service_buyer_id)).values(is_active=False))
+                elif revocation == "page":
+                    connection.execute(delete(ConsultationPage).where(ConsultationPage.id == UUID(created["page_instance_id"])))
+                else:
+                    connection.execute(update(ConsultationPage).where(ConsultationPage.id == UUID(created["page_instance_id"])).values(selected_order_id=None))
+        event.listen(engine, "before_cursor_execute", revoke_during_delivery)
+        try:
+            response = composed.post(PREFIX + "/messages", json=message_payload(created, text="查看商品列表；查询我的订单"))
+        finally:
+            event.remove(engine, "before_cursor_execute", revoke_during_delivery)
+        status, code = {"session": (401, "authentication_required"), "buyer": (401, "authentication_required"),
+                        "page": (410, "page_expired"), "selection": (409, "state_conflict")}[revocation]
+        assert_error(response, status, code)
+        assert order_id not in response.text and "PRIVATE_TIMEOUT_SENTINEL" not in response.text
+        assert client.get("/api/orders/" + order_id).json()["status"] == "pending_payment"
+        assert len(attempts) == 2
 
 
 def test_anonymous_order_questions_require_login_without_order_data(order_client):

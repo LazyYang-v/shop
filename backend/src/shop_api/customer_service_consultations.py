@@ -136,7 +136,8 @@ class ConsultationRoute(APIRoute):
                     status_code = 403 if code == 'resource_unavailable' else 422 if code == 'invalid_input' else 409 if code == 'state_conflict' else 503
                     message = {'resource_unavailable': '未找到可访问的记录', 'invalid_input': '工具参数无效',
                                'state_conflict': '订单状态或页面选择已变化，请重新选择',
-                               'mcp_timeout': '商品查询超时，请稍后重试', 'mcp_unavailable': '商品查询服务暂不可用'}[code]
+                               'mcp_timeout': '商品查询超时，请稍后重试', 'mcp_unavailable': '商品查询服务暂不可用',
+                               'tool_budget_exhausted': '工具额度已用完，请重新查询'}[code]
                     failure = ConsultationError(status_code, code, message)
                 elif isinstance(error, ModelUnavailable):
                     failure = ConsultationError(503, 'model_unavailable', '模型服务暂不可用')
@@ -349,22 +350,42 @@ def _composite_turn(payload, request, record, db, page, consultation, body_hash,
         _rate(request, 'cancel_proposal:' + hashlib.sha256(str(buyer.id).encode()).hexdigest(), 5)
     tools = CompositeTools(request, db, buyer, page, intent, deadline, proposal_rate)
     transport = request.app.state.customer_service_composite_transport
-    if transport is not None:
-        try:
+    try:
+        if transport is not None:
             tools.run_model(record.id, transport)
-        except Exception:
+        else:
+            tools.run_deterministic()
+    except Exception:
+        if time.monotonic() >= deadline:
+            tools.fail('turn_timeout')
+        elif transport is not None:
             from shop_api.customer_service_model_loop import ModelUnavailable
             raise ModelUnavailable from None
-    else:
-        tools.run_deterministic()
+        else:
+            raise
+    # Tool scheduling ends at 45s. Delivery has its own bounded validation so
+    # verified facts can become a durable partial even after that deadline.
+    delivery_deadline = QueryDeadline(3.0)
+    db.expire_all()
     now = request.app.state.clock()
-    _lock_session(db, record, now)
+    _lock_session(db, record, now, deadline=delivery_deadline)
     require_product_reader(request, record, db)
     if buyer:
         require_demo_buyer(request, record, db)
     page, consultation = _page(db, record, payload.page_instance_id, now)
-    QueryDeadline(max(0, deadline - time.monotonic())).check()
+    if page.selected_order_id != tools.selected_order_id:
+        raise ConsultationError(409, 'state_conflict', '订单选择已变化，请重新选择')
     tools.revalidate_policy()
+    if time.monotonic() >= deadline:
+        tools.fail('turn_timeout')
+    if tools.failure:
+        # Includes a proposal whose MCP response or final model callback timed out.
+        invalidate_pending_proposals(db, page.id, now)
+    delivery_deadline.check()
+    if not tools.results:
+        # The timeout still revokes an existing card, even when no facts survived.
+        db.commit()
+        raise QueryDeadlineExceeded
     code = tools.code()
     response = _envelope(request, 'partial' if code else 'ok', tools.response_data(),
                          **({'code': code} if code else {}))

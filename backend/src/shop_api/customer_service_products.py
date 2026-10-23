@@ -34,7 +34,8 @@ class GetProductArguments(BaseModel):
 class ProductTools:
     server_name = 'shop-products'
 
-    def __init__(self, session: Session, fixtures: Mapping[str, ProductFixture], request_id: str, clock: Callable[[], datetime], *, deadline=None):
+    def __init__(self, session: Session, fixtures: Mapping[str, ProductFixture], request_id: str, clock: Callable[[], datetime], *, deadline=None,
+                 retry_attempt: Callable[[], None] | None = None):
         self._session = session
         self._fixtures = fixtures
         self._request_id = request_id
@@ -42,6 +43,7 @@ class ProductTools:
         self._calls = 0
         self._seen: set[tuple[str, str]] = set()
         self._deadline = deadline or QueryDeadline(45.0)
+        self._retry_attempt = retry_attempt
 
     def call(self, name: Literal['list_products', 'get_product'], arguments: dict) -> dict:
         if name not in {'list_products', 'get_product'}:
@@ -105,7 +107,11 @@ class ProductTools:
                 return products
             except DBAPIError as error:
                 sqlstate = getattr(error.orig, 'sqlstate', None)
-                if attempt or self._calls >= 2 or sqlstate not in {'40001', '40P01', '55P03', '57014'}:
+                if attempt or sqlstate not in {'40001', '40P01', '55P03', '57014'}:
+                    raise
+                if self._retry_attempt is not None:
+                    self._retry_attempt()
+                if self._calls >= 2:
                     raise
         raise CustomerServiceUnavailable
 

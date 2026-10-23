@@ -118,6 +118,8 @@ def product_mcp_app(tools):
             category = ('resource_unavailable' if isinstance(error, HTTPException) and error.status_code == 403
                         else 'state_conflict' if isinstance(error, HTTPException) and error.status_code == 409
                         else 'invalid_input' if isinstance(error, HTTPException) and error.status_code == 422
+                        else 'tool_budget_exhausted' if (isinstance(error, CustomerServiceUnavailable)
+                                                         and getattr(error, 'code', None) == 'tool_budget_exhausted')
                         else 'mcp_timeout' if (isinstance(error, (QueryDeadlineExceeded, TimeoutError, httpx.TimeoutException))
                                                or isinstance(error, DBAPIError) and getattr(error.orig, 'sqlstate', None) == '57014')
                         else 'invalid_input' if isinstance(error, ValueError)
@@ -151,7 +153,7 @@ class CustomerServiceMCP:
         if (isinstance(value, dict) and set(value) == {'jsonrpc', 'id', 'error'}
                 and value['jsonrpc'] == '2.0' and type(value['id']) is int and value['id'] == self._id):
             error = value['error']
-            allowed = {'invalid_input', 'resource_unavailable', 'state_conflict', 'mcp_timeout', 'mcp_unavailable'}
+            allowed = {'invalid_input', 'resource_unavailable', 'state_conflict', 'mcp_timeout', 'mcp_unavailable', 'tool_budget_exhausted'}
             if (isinstance(error, dict) and set(error) == {'code', 'message', 'data'}
                     and type(error['code']) is int and error['code'] in {-32602, -32000}
                     and error['message'] == 'Customer service request unavailable' and isinstance(error['data'], dict)

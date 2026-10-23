@@ -224,7 +224,11 @@
     }
     function expireConfirmationCard(section, note) {
       section.querySelectorAll('[data-confirmation-action]').forEach(button => { button.disabled = true; });
-      if (section.querySelector('.invalid-note')) return;
+      const existing = section.querySelector('.invalid-note');
+      if (existing) {
+        existing.textContent = note;
+        return;
+      }
       const expired = document.createElement('p');
       expired.className = 'invalid-note';
       expired.textContent = note;

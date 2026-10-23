@@ -8,7 +8,7 @@ import time
 
 from fastapi import HTTPException
 
-from shop_api.customer_service import CustomerServiceUnavailable, QueryDeadline
+from shop_api.customer_service import CustomerServiceUnavailable, QueryDeadline, QueryDeadlineExceeded
 from shop_api.customer_service_cancel import CancellationTools, PROPOSAL_CARD_FIELDS
 from shop_api.customer_service_orders import OrderTools
 from shop_api.customer_service_policy import SYNTHETIC_LABEL, answer_policy_question, understand_policy_scope
@@ -32,6 +32,7 @@ class CompositeTools:
     def __init__(self, request, db, buyer, page, intent, deadline, proposal_rate):
         self.request, self.db, self.buyer, self.page = request, db, buyer, page
         self.intent, self.deadline, self.proposal_rate = intent, deadline, proposal_rate
+        self.selected_order_id = page.selected_order_id
         self.results = {}
         self.failure = None
         self.confirmation_card = None
@@ -40,10 +41,19 @@ class CompositeTools:
         self._query_deadline = QueryDeadline(max(0, deadline - time.monotonic()))
         arguments = (db, request.state.customer_service_request_id, request.app.state.clock)
         self._products = ProductTools(arguments[0], request.app.state.customer_service_fixtures,
-                                      *arguments[1:], deadline=self._query_deadline)
-        self._orders = OrderTools(db, buyer, *arguments[1:], deadline=self._query_deadline) if buyer else None
+                                      *arguments[1:], deadline=self._query_deadline,
+                                      retry_attempt=lambda: self._attempt('product'))
+        self._orders = OrderTools(db, buyer, *arguments[1:], deadline=self._query_deadline,
+                                  retry_attempt=lambda: self._attempt('order')) if buyer else None
         self._cancellation = CancellationTools(db, buyer, page, *arguments[1:],
                                                deadline=self._query_deadline) if buyer else None
+
+    def _attempt(self, category):
+        if (self._counts[category] >= {'policy': 1, 'product': 2, 'order': 2, 'proposal': 1}[category]
+                or sum(self._counts.values()) >= 6):
+            raise CompositeFailure('tool_budget_exhausted')
+        self._query_deadline.check()
+        self._counts[category] += 1
 
     def call(self, name, arguments):
         category = {'search_policy': 'policy', 'list_products': 'product', 'get_product': 'product',
@@ -51,11 +61,10 @@ class CompositeTools:
         if category is None:
             raise CompositeFailure('invalid_input')
         key = (name, json.dumps(arguments, sort_keys=True, separators=(',', ':')))
-        if key in self._seen or self._counts[category] >= {'policy': 1, 'product': 2, 'order': 2, 'proposal': 1}[category] or sum(self._counts.values()) >= 6:
+        if key in self._seen:
             raise CompositeFailure('tool_budget_exhausted')
-        self._query_deadline.check()
+        self._attempt(category)
         self._seen.add(key)
-        self._counts[category] += 1
         if name == 'search_policy':
             if arguments != {'question': self.intent.policy_question} or self.intent.policy_question is None:
                 raise CompositeFailure('invalid_input')
@@ -204,14 +213,16 @@ class CompositeTools:
                 self.run_deterministic(allow_proposal=False)
             if not self.results:
                 raise
-            self.failure = (error.code if isinstance(error, (CompositeFailure, ProductMCPFailure)) else
-                            'budget_exhausted' if isinstance(error, ModelBudgetDenied) else 'model_unavailable')
-            # A failed/unfinished model turn never leaves a usable proposal behind.
-            if self.confirmation_card:
-                from shop_api.customer_service_cancel import invalidate_pending_proposals
-                invalidate_pending_proposals(self.db, self.page.id, self.request.app.state.clock())
-                self.confirmation_card = None
-                self.results.pop('propose_cancel', None)
+            if self.failure:
+                return
+            self.fail('turn_timeout' if time.monotonic() >= self.deadline or isinstance(error, QueryDeadlineExceeded) else
+                      error.code if isinstance(error, (CompositeFailure, ProductMCPFailure)) else
+                      'budget_exhausted' if isinstance(error, ModelBudgetDenied) else 'model_unavailable')
+
+    def fail(self, code):
+        self.failure = code
+        self.confirmation_card = None
+        self.results.pop('propose_cancel', None)
 
     def complete(self):
         return (bool(self.results)
@@ -241,19 +252,27 @@ class CompositeTools:
         return {'order_ref': 'order_1', 'status': 'proposed', 'requires_confirmation': True}
 
     def run_deterministic(self, *, allow_proposal=True):
-        if self.intent.orders:
-            if self.page.selected_order_id is None:
-                self.call('list_my_orders', {})
-            else:
-                self.call('get_my_order', {'order_id': str(self.page.selected_order_id)})
-        if self.intent.product_id:
-            self.call('get_product', {'product_id': self.intent.product_id})
-        elif self.intent.product_list:
-            self.call('list_products', {'page_size': 20})
-        if self.intent.policy_question:
-            self.call('search_policy', {'question': self.intent.policy_question})
-        if allow_proposal and self.intent.cancel and self.eligible():
-            self.call('propose_cancel', {'order_id': str(self.page.selected_order_id)})
+        try:
+            if self.intent.orders:
+                if self.page.selected_order_id is None:
+                    self.call('list_my_orders', {})
+                else:
+                    self.call('get_my_order', {'order_id': str(self.page.selected_order_id)})
+            if self.intent.product_id:
+                self.call('get_product', {'product_id': self.intent.product_id})
+            elif self.intent.product_list:
+                self.call('list_products', {'page_size': 20})
+            if self.intent.policy_question:
+                self.call('search_policy', {'question': self.intent.policy_question})
+            if allow_proposal and self.intent.cancel and self.eligible():
+                self.call('propose_cancel', {'order_id': str(self.page.selected_order_id)})
+        except (CustomerServiceUnavailable, HTTPException) as error:
+            if (not self.results or isinstance(error, HTTPException) and error.status_code != 503
+                    or isinstance(error, (CompositeFailure, ProductMCPFailure))
+                    and error.code in {'authentication_required', 'resource_unavailable', 'state_conflict', 'invalid_input'}):
+                raise
+            self.fail('turn_timeout' if time.monotonic() >= self.deadline or isinstance(error, QueryDeadlineExceeded) else
+                      error.code if isinstance(error, (CompositeFailure, ProductMCPFailure)) else 'dependency_unavailable')
 
     def response_data(self):
         cards, parts, replies, citations = [], [], [], []

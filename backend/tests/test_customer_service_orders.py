@@ -121,7 +121,7 @@ def test_composite_deadline_persists_verified_partial_and_revokes_proposals(orde
     modules = [customer_service, customer_service_composite, customer_service_consultations,
                customer_service_model_transport, customer_service_model_turn, customer_service_product_mcp]
     for module in modules:
-        monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: time.monotonic() + elapsed[0]))
+        monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: time.monotonic() + elapsed[0], monotonic_ns=time.monotonic_ns))
     attempts = []
     delivery = [False]
     issued_ids = []
@@ -385,7 +385,7 @@ def test_composite_timeout_revalidates_current_access_before_partial_delivery(or
     elapsed = [0.0]
     for module in [customer_service, customer_service_composite, customer_service_consultations,
                    customer_service_model_transport, customer_service_model_turn, customer_service_product_mcp]:
-        monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: time.monotonic() + elapsed[0]))
+        monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: time.monotonic() + elapsed[0], monotonic_ns=time.monotonic_ns))
     attempts = []
     def exchange(*_):
         attempts.append(True)

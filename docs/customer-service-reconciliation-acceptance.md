@@ -2,35 +2,35 @@
 
 关联：[LazyYang-v/docs#8](https://github.com/LazyYang-v/docs/issues/8)。更新：2026-10-24。
 
-状态：核心实现已提交于 `73f19629af03318b62206464cc8dd6064d6db802`；浏览器验收补充已通过页面模拟测试。真实 Chrome → 商城 API → 隔离 PostgreSQL 验收尚未通过，不据此关闭工单。
+状态：当前版本完整客服 Playwright 套件、真实 Chrome → 商城 API → 隔离 PostgreSQL 验收及相关 API 回归均通过。核心实现提交为 `73f19629af03318b62206464cc8dd6064d6db802`；浏览器验收补充提交为 `9680b4b`，位于 `integration/customer-service-ticket-8`。
 
-## 验收补充
+## 实现与测试边界
 
-- `e2e/customer-service.spec.ts`：确认返回结果未知后，浏览器自动核验；核验返回已失效证据时停止重试取消并提示旧确认资格已撤销。用例还从页面发起迟到确认与重复核验，检查请求绑定及终态响应。该套件模拟 API 响应，不能单独证明事务、订单不变或证据持久性。
-- `backend/tests/test_customer_service_browser.py`：通过真实地址、购物车和下单 API 增加一笔待支付订单，供核验先到场景使用；仍使用既有隔离测试数据库夹具和安全检查。
-- `e2e/customer-service-real.mjs`：保留真实确认提交后丢响应的场景；另拦截一笔确认请求，使其暂未到达后端，让真实核验接口先撤销凭据，再向真实后端发送迟到确认。验证重复核验返回相同证据、迟到确认返回 409、订单仍待支付及页面重载后状态不变。提前订阅核验响应以避免错过响应；重复核验在原页面绑定有效期间完成。
-- 页面重载与应用重启分别记录。应用重启后的证据、操作锁争用、确认与核验竞争、到期清理由既有 PostgreSQL API 测试覆盖；当前真实浏览器场景不模拟服务重启。
+- 核验接口校验认证会话、CSRF、来源及买家、页面、咨询和操作绑定，与确认使用同一操作记录排他锁。锁等待限制为一秒；待确认操作条件失效并撤销凭据，终态返回持久证据，迟到确认不能取消订单。
+- 浏览器只在确认结果未知或处理中时核验，不重放取消；明确回滚允许买家在凭据有效期内重新确认。自动轮询按二、四、八秒及后续十五秒加入抖动，五分钟停止并保留一次手动检查；终态、身份或页面失效时停止。成功提示要求执行证据与独立订单 API 状态一致。
+- `e2e/customer-service.spec.ts` 模拟 API 响应，验证页面行为、请求绑定、轮询、截止、停止及单次手动检查。新增用例覆盖核验先完成后的失效提示、迟到确认和重复核验响应；模拟响应本身不证明真实事务或证据持久性。
+- `backend/tests/test_customer_service_browser.py` 通过真实地址、购物车和下单 API 准备待支付订单，使用既有隔离数据库夹具和安全检查。
+- `e2e/customer-service-real.mjs` 保留真实确认提交后丢响应的场景；另一笔订单先拦截确认请求，让真实核验接口撤销凭据，再向真实后端发送迟到确认。验证重复核验证据一致、迟到确认 409、订单仍待支付及页面重载后状态不变。核验响应等待器在点击前注册；重复核验在原页面绑定有效时完成。
+- 锁争用、确认与核验竞争、应用重启后的持久证据及到期清理通过真实 PostgreSQL API 用例验证。页面重载与应用重启分别记录；真实浏览器脚本覆盖页面重载，应用重启由 API 测试覆盖。
 
-## 当前验证结果
+## 当前版本验证结果
 
-| 检查 | 结果 | 边界与限制 |
+| 检查 | 结果 | 范围 |
 |---|---|---|
-| 完整客服 Playwright 套件 | 25 passed，24.9 秒 | `npm run test:e2e -- e2e/customer-service.spec.ts`；使用真实 Chrome 和模拟 API，包含明确回滚、未知响应、轮询、身份失效、手动检查及核验先到场景 |
+| 完整客服 Playwright 套件 | 25 passed，24.9 秒 | `npm run test:e2e -- e2e/customer-service.spec.ts`；真实 Chrome、模拟 API |
+| PostgreSQL API 与真实浏览器验收 | 50 passed，22.37 秒 | `test_customer_service_cancel_proposal.py`、`test_customer_service_maintenance.py`、`test_order_expiry.py`、`test_customer_service_browser.py`；设置 `SHOP_RUN_BROWSER_TESTS=1`，真实浏览器用例执行通过 |
 | 前端类型检查与构建 | 通过 | `npm run build` |
 | 真实浏览器脚本语法 | 通过 | `node --check e2e/customer-service-real.mjs` |
-| 差异格式检查 | 通过 | `git diff --check` |
-| 浏览器验收补充独立复核 | 未发现具体缺陷 | 只读检查三个测试文件及相关接口、页面与会话逻辑；未运行数据库测试 |
-| 当前版本 PostgreSQL API 回归 | 未执行，自动审批拒绝 | 拟运行取消/核验、客服维护及订单到期用例；不将历史结果记为本次通过 |
-| 新增真实 Chrome → API → PostgreSQL 流程 | 未执行，待数据库测试授权 | 新夹具和真实浏览器脚本尚无本次运行结果 |
+| Python 浏览器夹具语法 | 通过 | 标准库 AST 解析 |
+| 差异格式检查 | 通过 | `git diff --check`、提交差异检查 |
+| 浏览器验收补充独立复核 | 未发现具体缺陷 | 只读检查三个测试文件及相关接口、页面和会话逻辑 |
 
-历史证据：核心实现阶段的隔离 PostgreSQL 取消/核验 API 用例为 36 passed；早期真实浏览器运行曾在文案断言处失败。不能用这些结果替代当前版本的真实集成验收。
+后端测试出现两条依赖弃用警告：Starlette TestClient 的 httpx 用法及 Alembic 配置缺少 `path_separator`。无失败或跳过。首次直接 pytest 调用因导入应用时未设置 `SHOP_DATABASE_URL` 而在加载用例前停止；将应用和测试两个数据库地址都设为同一隔离测试库后，上述四份测试全部通过。
 
-## 数据库范围及审批阻塞
+## 数据库及外部调用范围
 
-只允许使用既有 `shop-portfolio-test-postgres` 容器，地址 `127.0.0.1:55445/shop_test`，独立卷 `shop_shop-portfolio-test-postgres-data`。本轮只读检查确认该容器运行且仅在 loopback 发布测试端口。不得使用开发库、演示库、删除数据卷或扩大测试数据清理范围。
+用户明确授权本次对 `127.0.0.1:55445/shop_test` 使用进程级 `SHOP_ALLOW_TEST_DATABASE_RESET=1` 运行既有夹具清理、API 和真实 Chrome 验收，并发布 GitHub 验证结果。此前自动审批对仓库外 runner 和测试清理的阻塞已通过明确授权及仓库正式 pytest 入口解决；未复制或执行仓库外 runner。
 
-本轮自动审批先以仓库外代码来源未获授权为由拒绝 `/tmp/shop-run-backend-regression.py`。随后尝试 README 记录的直接 `pytest` 入口，保留 `SHOP_ALLOW_TEST_DATABASE_RESET=1` 安全检查；自动审批要求用户明确授权针对 `shop_test` 的测试清理，命令未执行。
+测试仅连接既有 `shop-portfolio-test-postgres` 容器及独立卷 `shop_shop-portfolio-test-postgres-data`；应用与测试数据库地址均指向 `127.0.0.1:55445/shop_test`。数据库名称与清理授权安全检查保持启用，沿用既有夹具的迁移、种子准备和测试数据清理范围。没有访问开发库或演示库、删除数据库卷、扩展清理逻辑，或向 `.env`、源码、持久配置写入清理开关。
 
-该开关只拟设置在单次测试进程环境中，不写入 `.env`、源码或持久配置。现有夹具会校验数据库名称、执行迁移、准备测试种子并清理其既有测试数据范围。未关闭安全检查，也未复制 runner 或修改清理逻辑以规避审批。需要针对上述隔离测试库的明确授权后，才能补齐 API 回归和真实浏览器运行结果。
-
-GitHub 验证评论已准备，发布时自动审批另要求明确授权向 `LazyYang-v/docs#8` 写评论，因此本轮远端验证记录未更新；工单保持 OPEN。
+真实浏览器验收使用合成模型交换和合成政策；真实模型调用 0、WeKnora 请求 0、费用 0。临时前端服务器已停止；真实浏览器夹具负责关闭其 API 服务及浏览器。

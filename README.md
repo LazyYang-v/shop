@@ -81,10 +81,13 @@
 测试数据库必须单独启动，数据库名称必须精确为 `shop_test`，使用独立端口和独立 Docker volume。测试清理只有设置 `SHOP_ALLOW_TEST_DATABASE_RESET=1` 才可运行。不得把 `shop_dev` 或演示数据库配置给测试。
 
 ```sh
-SHOP_TEST_DATABASE_URL='postgresql+psycopg://shop:<password>@127.0.0.1:<test-port>/shop_test' \
-SHOP_ALLOW_TEST_DATABASE_RESET=1 \
-uv run --project backend pytest backend/tests -q
+export SHOP_TEST_DATABASE_URL='postgresql+psycopg://shop:<password>@127.0.0.1:<test-port>/shop_test'
+SHOP_DATABASE_URL="$SHOP_TEST_DATABASE_URL" \
+  SHOP_ALLOW_TEST_DATABASE_RESET=1 \
+  uv run --project backend pytest backend/tests -q
 ```
+
+应用导入与测试夹具分别读取 `SHOP_DATABASE_URL`、`SHOP_TEST_DATABASE_URL`，两者必须指向同一隔离 `shop_test`；清理开关仅设置在本次测试进程，不写入 `.env` 或其他持久配置。
 
 测试数据库容器与数据卷须在确认 `docker compose config` 解析结果和目标库名后单独创建。项目不会自动删除任何数据库卷。
 

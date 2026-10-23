@@ -135,9 +135,11 @@ def test_full_migration_baseline_initializes(database_url, isolated_schema, pass
             for revision in reversed(list(scripts.walk_revisions())):
                 revision.module.upgrade()
         before = connection.execute(text(f'SELECT * FROM "{schema}".customer_service_model_guard')).all()
+        paid_before = connection.execute(text(f'SELECT * FROM "{schema}".customer_service_paid_budget')).all()
     assert initialize(database_url, schema, passwords, allow_migration_seed=True) == 4
     with engine.connect() as connection:
         assert connection.execute(text(f'SELECT * FROM "{schema}".customer_service_model_guard')).all() == before
+        assert connection.execute(text(f'SELECT * FROM "{schema}".customer_service_paid_budget')).all() == paid_before
 
 
 @pytest.mark.parametrize("blocked", [False, True])
@@ -153,6 +155,36 @@ def test_model_guard_baseline_is_explicit_and_exact(database_url, isolated_schem
         with pytest.raises(ValueError, match="empty application"):
             initialize(database_url, schema, passwords)
         assert initialize(database_url, schema, passwords, allow_migration_seed=True) == 4
+
+
+PAID_BUDGET_COLUMNS = ("id integer, state text, max_attempts integer, attempts_committed integer, "
+                       "cap_fen bigint, charged_fen bigint, price_card_sha256 text, price_card jsonb, "
+                       "stopped_reason text, created_at timestamptz, armed_at timestamptz, stopped_at timestamptz")
+
+
+def test_pristine_paid_budget_baseline_is_accepted(database_url, isolated_schema, passwords):
+    engine, schema = isolated_schema
+    with engine.begin() as connection:
+        connection.execute(text(f'CREATE TABLE "{schema}".customer_service_paid_budget ({PAID_BUDGET_COLUMNS})'))
+        connection.execute(text(f'''INSERT INTO "{schema}".customer_service_paid_budget VALUES
+            (1, 'disabled', 200, 0, 2000, 0, NULL, NULL, NULL, now(), NULL, NULL)'''))
+    with pytest.raises(ValueError, match="empty application"):
+        initialize(database_url, schema, passwords)
+    assert initialize(database_url, schema, passwords, allow_migration_seed=True) == 4
+
+
+@pytest.mark.parametrize("column,value", [("state", "armed"), ("state", "stopped"),
+                                          ("attempts_committed", 1), ("charged_fen", 1),
+                                          ("price_card_sha256", "a" * 64), ("stopped_reason", "attempt_cap")])
+def test_paid_budget_with_usage_evidence_is_rejected(database_url, isolated_schema, passwords, column, value):
+    engine, schema = isolated_schema
+    with engine.begin() as connection:
+        connection.execute(text(f'CREATE TABLE "{schema}".customer_service_paid_budget ({PAID_BUDGET_COLUMNS})'))
+        connection.execute(text(f'''INSERT INTO "{schema}".customer_service_paid_budget VALUES
+            (1, 'disabled', 200, 0, 2000, 0, NULL, NULL, NULL, now(), NULL, NULL)'''))
+        connection.execute(text(f'UPDATE "{schema}".customer_service_paid_budget SET {column}=:value'), {"value": value})
+    with pytest.raises(ValueError, match="empty application"):
+        initialize(database_url, schema, passwords, allow_migration_seed=True)
 
 
 def test_post_insert_failure_rolls_back(database_url, isolated_schema, passwords, monkeypatch):

@@ -49,6 +49,18 @@ A后续独立修复f13a47e已合并：同页所有CSRF bootstrap与POST/续期�
 
 限制：真实超时语句由测试在数据库读取边界注入，证明真实PostgreSQL取消→DBAPIError→现有重试→MCP分类，不冒称普通商品SELECT在真实负载下自然耗时超限。PostgreSQL57014表示query_canceled，数据库主动取消也归同一受控超时类别；无任意阻塞Python强制取消证明。仍仅本地in-process ASGI MCP、受控整句语法；外部MCP/真实提供方验证与C均未执行，累计真实调用0、金额0。
 
+## Phase C 持久付费预算预留（2026-10-23，未真实调用）
+
+C的前置计量已实现：迁移`0020_cs_paid_budget`创建单例`customer_service_paid_budget`，以数据库行（非进程/会话内存）累计终身`attempts_committed≤200`与`charged_fen≤2000`（人民币20元），会话、worker、重启均不重置；初始`state='disabled'`，迁移外无环境变量可放行。
+
+`customer_service_spend_guard.py`的`SpendGuard`在发送前原子预留整笔最坏成本：先锁单例行再锁预留行；必须提供受信代码给出的冻结`PriceCard`（版本、provider、model、来源、批准、币种、输入/输出/缓存命中费率、整数汇率），首次预留写入卡片JSON与SHA-256；此后任何不同卡片一律拒绝。金额全程整数运算并按分向上取整，不经过浮点。预留同时提交一次`attempts_committed`；达到200或下一次预留将超过2000分时永久转为`stopped`（`attempt_cap`/`spend_cap`），不因会话新建或重启恢复。`claim_dispatch`以`dispatch_claimed_at`实现一次性发送许可，已领取的预留绝不重发。
+
+结算只接受时限内、且不超过预留输入12000/输出1500的实际usage，按同一冻结卡片重算并退回未用金额，重复结算幂等；超时、已结束或结果不明的预留保留全额，迟到响应不退款。usage超过预留上界或卡片缺失/损坏时转为`blocked`并保持全额，后续准入关闭。演示初始化器只接受迁移生成的零用量单例行（`disabled`、200/0、2000/0、无卡片、无停止原因、无时间戳除创建时间），一旦存在`armed`/`stopped`、尝试数、已用金额、卡片摘要或停止原因即拒绝初始化，避免把已发生的真实调用洗掉。
+
+验证：`uv run --project backend python -I /tmp/shop-phase-a-tests.py backend/tests/test_customer_service_spend_guard.py backend/tests/test_customer_service_demo.py -q`：42 passed、2 warnings、8.10s；新增11项预算测试（含并发仅一个预留成功、重启后仍累计、卡片冻结、不明结果全额、超界闩锁、向上取整）及7项初始化器基线测试。完整后端：`... backend/tests -q`：285 passed、1 skipped、2 warnings、57.73s，迁移`0019 -> 0020`在该隔离测试库应用。
+
+限制：尚未接入任何已启用的真实发送路径，真实provider transport仍无条件关闭；`PriceCard`尚未填入经核实的官方价格与汇率，因此`reserve(price_card=None)`一律拒绝。费率按输入全量缓存未命中预留，缓存命中价仅记录不用于降低上限；输入上界来自既有12000/1500预留，未证明提供方实际计费token不超过该值。结算金额按首笔预留时冻结的同一卡片重算，是保守上界而非提供方发票核对，峰谷时段或实际缓存命中带来的低价不会追溯降低已记录金额。官方DeepSeek价格页与检索快照存在不一致且部分页面不可核验，故不把任何网络数字写死为生产价格。真实提供方请求累计仍为0、金额0；C真实验证须用户另行批准问题集、请求数与金额。
+
 ## 五条验收要求与证据
 
 | 原始要求 | 核对结果 | 实现及验证证据 |

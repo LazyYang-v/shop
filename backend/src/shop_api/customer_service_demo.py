@@ -159,9 +159,19 @@ def _initialize(database_url, fixture_path, expected_sha256, passwords, expected
                 rows = session.execute(select(table).limit(2)).mappings().all()
                 if not rows:
                     continue
+                row = dict(rows[0])
                 if (allow_migration_seed and name == "customer_service_model_guard"
-                        and len(rows) == 1 and dict(rows[0]) == {"id": 1, "metering_blocked": False}):
+                        and len(rows) == 1 and row == {"id": 1, "metering_blocked": False}):
                     # Migration 0017 creates this singleton; it contains no usage.
+                    continue
+                if (allow_migration_seed and name == "customer_service_paid_budget"
+                        and len(rows) == 1 and row.pop("created_at", None) is not None
+                        and row == {
+                            "id": 1, "state": "disabled", "max_attempts": 200,
+                            "attempts_committed": 0, "cap_fen": 2000, "charged_fen": 0,
+                            "price_card_sha256": None, "price_card": None,
+                            "stopped_reason": None, "armed_at": None, "stopped_at": None}):
+                    # Migration 0020 creates this singleton with no paid usage.
                     continue
                 if name != "products" or not allow_migration_seed or len(rows) != 1:
                     raise ValueError("Demo initialization requires empty application tables")

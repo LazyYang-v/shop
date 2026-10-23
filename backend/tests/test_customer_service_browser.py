@@ -47,6 +47,12 @@ def test_customer_service_browser_queries_real_isolated_catalog(client, tmp_path
                         json={'address_id': address['id']})
     assert order.status_code == 201
     order_id = order.json()['id']
+    assert client.post('/api/cart/items', headers=headers, json={
+        'product_id': '00000000-0000-0000-0000-000000000001', 'quantity': 1}).status_code == 201
+    cancel_order = client.post('/api/orders', headers={**headers, 'Idempotency-Key': secrets.token_hex(16)},
+                               json={'address_id': address['id']})
+    assert cancel_order.status_code == 201
+    cancel_order_id = cancel_order.json()['id']
     from sqlalchemy import text as sql_text
     with client.app.state.session_factory.begin() as db:
         db.execute(sql_text("""UPDATE orders SET status='pending_receipt', shipping_company='虚构速运',
@@ -118,6 +124,7 @@ def test_customer_service_browser_queries_real_isolated_catalog(client, tmp_path
             env = os.environ.copy()
             env.update(SHOP_BROWSER_TEST_ORIGIN=f'http://127.0.0.1:{port}', SHOP_BROWSER_TEST_EMAIL=emails[0], SHOP_BROWSER_TEST_PASSWORD=password,
                        SHOP_BROWSER_TEST_EMAIL_2=emails[1], SHOP_BROWSER_TEST_ORDER_ID=order_id,
+                       SHOP_BROWSER_TEST_CANCEL_ORDER_ID=cancel_order_id,
                        SHOP_BROWSER_TEST_CLOCK_KEY=test_clock_key)
             result = subprocess.run(['node', str(root / 'e2e/customer-service-real.mjs')], env=env, capture_output=True, text=True, timeout=45)
             assert result.returncode == 0, result.stdout + result.stderr
@@ -133,10 +140,10 @@ def test_customer_service_browser_queries_real_isolated_catalog(client, tmp_path
     assert len(exchanges) == 4
     for forbidden in ['PRIVATE_SENTINEL', 'PRIVATE_POLICY_SENTINEL', 'PRIVATE_RESEARCH_SENTINEL',
                       'PRIVATE_PHONE_SENTINEL', 'PRIVATE_ADDRESS_SENTINEL', 'DEMO-BROWSER-001', order_id,
-                      '春日', '00000000-0000-0000-0000-000000000001', password, test_clock_key, *emails]:
+                      cancel_order_id, '春日', '00000000-0000-0000-0000-000000000001', password, test_clock_key, *emails]:
         assert all(forbidden not in exchange for exchange in exchanges)
         assert all(forbidden not in path.read_text() for path in logs.glob('*.jsonl'))
     records = [json.loads(line) for path in logs.glob('customer-service-*.jsonl') for line in path.read_text().splitlines()]
     assert {record['tool'] for record in records} == {'list_products', 'get_product', 'list_my_orders',
-                                                       'get_my_order', 'search_policy'}
+                                                       'get_my_order', 'search_policy', 'propose_cancel'}
     assert all(set(record) == {'request_id', 'tool', 'error', 'duration_ms', 'count', 'recorded_at'} for record in records)

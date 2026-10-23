@@ -18,10 +18,18 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from shop_api.customer_service import CustomerServiceUnavailable, QueryDeadline
+from shop_api.customer_service_cancel import (
+    CANCEL_TRIGGER_TEXT,
+    CancellationTools,
+    invalidate_pending_proposals,
+    invalidate_pending_proposals_for_pages,
+    sanitize_proposal_response,
+)
 from shop_api.customer_service_orders import OrderTools, looks_like_order_question, understand_order
 from shop_api.customer_service_products import ProductTools
 from shop_api.database import Base
 from shop_api.identity import AuthSession, require_csrf
+from shop_api.orders import Order
 from shop_api.customer_service_admission import require_demo_buyer, require_product_reader, require_query_rate_limits
 
 LIST_PRODUCTS_TEXT = "查看演示商品"
@@ -52,6 +60,9 @@ class ConsultationPage(Base):
     last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     handoff_hash: Mapped[bytes | None] = mapped_column(LargeBinary(32), nullable=True, unique=True)
     handoff_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Buyer selection is server-side and bound to this page/consultation.
+    selected_order_id: Mapped[UUID | None] = mapped_column(Uuid, nullable=True)
+    selected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ConsultationMessage(Base):
@@ -115,8 +126,9 @@ class ConsultationRoute(APIRoute):
                 from shop_api.customer_service_model_loop import ModelUnavailable
                 if isinstance(error, ProductMCPFailure):
                     code = error.code
-                    status_code = 403 if code == 'resource_unavailable' else 422 if code == 'invalid_input' else 503
+                    status_code = 403 if code == 'resource_unavailable' else 422 if code == 'invalid_input' else 409 if code == 'state_conflict' else 503
                     message = {'resource_unavailable': '未找到可访问的记录', 'invalid_input': '工具参数无效',
+                               'state_conflict': '订单状态或页面选择已变化，请重新选择',
                                'mcp_timeout': '商品查询超时，请稍后重试', 'mcp_unavailable': '商品查询服务暂不可用'}[code]
                     failure = ConsultationError(status_code, code, message)
                 elif isinstance(error, ModelUnavailable):
@@ -185,6 +197,26 @@ def _order_probe_rate(request: Request, buyer) -> None:
     _rate(request, key, 10)
 
 
+def _record_selection(db: Session, page: ConsultationPage, order: Order, now: datetime) -> None:
+    """Record the buyer's explicit server-side selection; a change revokes its card."""
+    changed = page.selected_order_id != order.id
+    page.selected_order_id = order.id
+    page.selected_at = now
+    if changed:
+        invalidate_pending_proposals(db, page.id, now)
+
+
+def _selected_order(db: Session, buyer, order_id: str) -> Order:
+    try:
+        wanted = UUID(order_id)
+    except ValueError:
+        raise ConsultationError(422, 'invalid_input', '请求参数无效') from None
+    order = db.scalar(select(Order).where(Order.id == wanted, Order.user_id == buyer.id))
+    if order is None:
+        raise ConsultationError(403, 'resource_unavailable', '未找到可访问订单')
+    return order
+
+
 def _order_turn(payload: MessageInput, request: Request, record: AuthSession, db: Session,
                 page: ConsultationPage, consultation: Consultation, body_hash: bytes,
                 key: tuple, deadline: float) -> dict:
@@ -205,11 +237,9 @@ def _order_turn(payload: MessageInput, request: Request, record: AuthSession, db
     require_query_rate_limits(request)
     if payload.selected_order_id is not None:
         _order_probe_rate(request, buyer)
-        try:
-            order_id = str(UUID(payload.selected_order_id))
-        except ValueError:
-            raise ConsultationError(422, 'invalid_input', '请求参数无效') from None
-        name, arguments = 'get_my_order', {'order_id': order_id}
+        selected = _selected_order(db, buyer, payload.selected_order_id)
+        _record_selection(db, page, selected, request.app.state.clock())
+        name, arguments = 'get_my_order', {'order_id': str(selected.id)}
     else:
         name, arguments = understand_order(payload.text or '') or ('clarify', {})
         if arguments.get('order_number') is not None:
@@ -240,8 +270,9 @@ def _order_turn(payload: MessageInput, request: Request, record: AuthSession, db
         result = mcp.call(name, arguments)
     except ProductMCPFailure as error:
         code = error.code
-        status_code = 403 if code == 'resource_unavailable' else 422 if code == 'invalid_input' else 503
+        status_code = 403 if code == 'resource_unavailable' else 422 if code == 'invalid_input' else 409 if code == 'state_conflict' else 503
         message = {'resource_unavailable': '未找到可访问订单', 'invalid_input': '请求参数无效',
+                   'state_conflict': '订单状态已变化，请重新选择',
                    'mcp_timeout': '订单查询超时，请稍后重试', 'mcp_unavailable': '订单查询服务暂不可用'}.get(
                        code, '订单查询服务暂不可用')
         raise ConsultationError(status_code, code, message) from None
@@ -272,6 +303,83 @@ def _order_turn(payload: MessageInput, request: Request, record: AuthSession, db
     request.app.state.customer_service_log_writer.write(
         request.state.customer_service_request_id, name, '', int((time.monotonic() - started) * 1000), len(cards), now)
     _store_response(db, key, response)
+    page.last_used_at = consultation.last_used_at = now
+    db.commit()
+    return response
+
+
+def _cancel_turn(payload: MessageInput, request: Request, record: AuthSession, db: Session,
+                 page: ConsultationPage, consultation: Consultation, body_hash: bytes,
+                 key: tuple, deadline: float) -> dict:
+    """Issue a cancellation proposal for the page's server-recorded selection."""
+    from shop_api.customer_service_product_mcp import CustomerServiceMCP, ProductMCPFailure
+
+    started = time.monotonic()
+    if record.kind != 'authenticated' or record.user_id is None:
+        raise ConsultationError(401, 'authentication_required', '请登录后查看本人订单')
+    try:
+        buyer = require_demo_buyer(request, record, db)
+    except HTTPException as error:
+        code, message = {401: ('authentication_required', '请登录后查看本人订单'),
+                         403: ('resource_unavailable', '未找到可访问的记录'),
+                         503: ('dependency_unavailable', '客服暂不可用')}.get(
+                             error.status_code, ('dependency_unavailable', '客服暂不可用'))
+        raise ConsultationError(error.status_code, code, message, error.headers) from None
+    require_query_rate_limits(request)
+    now = request.app.state.clock()
+    if payload.selected_order_id is not None:
+        _order_probe_rate(request, buyer)
+        selected = _selected_order(db, buyer, payload.selected_order_id)
+        _record_selection(db, page, selected, now)
+    if page.selected_order_id is None:
+        raise ConsultationError(409, 'state_conflict', '请先选择订单')
+    selected_order_id = page.selected_order_id
+    _rate(request, "cancel_proposal:" + hashlib.sha256(str(buyer.id).encode()).hexdigest(), 5)
+
+    claim = _envelope(request, 'unavailable', code='processing', message='已有请求结果未能确认')
+    db.add(ConsultationMessage(consultation_id=consultation.id, page_id=page.id,
+                               client_message_id=UUID(payload.client_message_id), body_hash=body_hash, response=claim))
+    db.commit()
+
+    tools = CancellationTools(db, buyer, page, request.state.customer_service_request_id,
+                              request.app.state.clock,
+                              deadline=QueryDeadline(max(0, deadline - time.monotonic())))
+    mcp = CustomerServiceMCP(tools, deadline=deadline)
+    try:
+        mcp.initialize()
+        mcp.tools()
+        result = mcp.call('propose_cancel', {'order_id': str(page.selected_order_id)})
+    except ProductMCPFailure as error:
+        code = error.code
+        status_code = (403 if code == 'resource_unavailable' else 409 if code == 'state_conflict'
+                       else 422 if code == 'invalid_input' else 503)
+        message = {'resource_unavailable': '未找到可访问订单', 'state_conflict': '订单状态或页面选择已变化，请重新选择',
+                   'invalid_input': '请求参数无效', 'mcp_timeout': '取消方案签发超时，请稍后重试',
+                   'mcp_unavailable': '取消方案暂不可用'}.get(code, '取消方案暂不可用')
+        raise ConsultationError(status_code, code, message) from None
+    finally:
+        mcp.close()
+    token = tools.take_confirmation_token()
+    if token is None:
+        raise CustomerServiceUnavailable
+
+    now = request.app.state.clock()
+    _lock_session(db, record, now)
+    require_demo_buyer(request, record, db)
+    page, consultation = _page(db, record, payload.page_instance_id, now)
+    data = result['data']
+    card = {field: data[field] for field in ('operation_id', 'status', 'product_summary',
+                                             'total', 'currency', 'expires_at')}
+    card['order_number'] = str(selected_order_id)
+    card['confirmation_token'] = token
+    response = _envelope(request, 'ok', {
+        'reply': '已生成取消确认方案；确认执行尚未开放。'
+                 '取消后将恢复商品库存，操作不可撤销，且购物车不会恢复。',
+        'cards': [], 'citations': []}, confirmation_card=card)
+    request.app.state.customer_service_log_writer.write(
+        request.state.customer_service_request_id, 'propose_cancel', '',
+        int((time.monotonic() - started) * 1000), 1, now)
+    _store_response(db, key, sanitize_proposal_response(response))
     page.last_used_at = consultation.last_used_at = now
     db.commit()
     return response
@@ -308,15 +416,18 @@ def build_consultation_router(session_dependency, current_session):
                 candidate = db.get(Consultation, predecessor.consultation_id)
                 if candidate is not None and not _consultation_expired(candidate, now):
                     consultation = candidate
+                    invalidate_pending_proposals(db, predecessor.id, now)
                     db.delete(predecessor)
                     pages.remove(predecessor)
         # Expired pages cannot be revived; LRU removal is atomic with creation.
         for page in list(pages):
             context = db.get(Consultation, page.consultation_id)
             if page.last_used_at + timedelta(minutes=10) <= now or context is None or _consultation_expired(context, now):
+                invalidate_pending_proposals(db, page.id, now)
                 db.delete(page)
                 pages.remove(page)
         if len(pages) >= 10:
+            invalidate_pending_proposals(db, pages[0].id, now)
             db.delete(pages[0])
         if consultation is None:
             consultation = Consultation(id=uuid4(), session_id=record.id, created_at=now, last_used_at=now)
@@ -384,6 +495,8 @@ def build_consultation_router(session_dependency, current_session):
             return existing.response
         if payload.text is None and payload.selected_order_id is None:
             raise ConsultationError(422, "invalid_input", "请选择受支持的服务查询")
+        if payload.text is not None and payload.text.strip() == CANCEL_TRIGGER_TEXT:
+            return _cancel_turn(payload, request, record, db, page, consultation, body_hash, key, deadline)
         if payload.selected_order_id is not None or looks_like_order_question(payload.text or ""):
             return _order_turn(payload, request, record, db, page, consultation, body_hash, key, deadline)
         require_query_rate_limits(request)
@@ -490,6 +603,16 @@ def cleanup_consultations(session_factory, now: datetime) -> None:
                 ConsultationPage.handoff_expires_at <= now,
                 ConsultationPage.handoff_hash.is_not(None),
             ).values(handoff_hash=None))
+            doomed_consultations = select(Consultation.id).where(
+                Consultation.session_id == record.id,
+                (Consultation.last_used_at <= now - timedelta(minutes=30)) |
+                (Consultation.created_at <= now - timedelta(hours=24)))
+            doomed_page_ids = db.scalars(select(ConsultationPage.id).where(
+                ConsultationPage.session_id == record.id,
+                (ConsultationPage.last_used_at <= now - timedelta(minutes=10)) |
+                ConsultationPage.consultation_id.in_(doomed_consultations))).all()
+            # Terminal evidence survives; only this page's pending credential is revoked.
+            invalidate_pending_proposals_for_pages(db, doomed_page_ids, now)
             db.execute(delete(Consultation).where(Consultation.session_id == record.id,
                        (Consultation.last_used_at <= now - timedelta(minutes=30)) |
                        (Consultation.created_at <= now - timedelta(hours=24))))

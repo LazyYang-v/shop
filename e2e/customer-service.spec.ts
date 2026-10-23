@@ -355,6 +355,65 @@ test('order candidates require an explicit click before detail and never render 
   await expect(log).not.toContainText('预计送达：')
 })
 
+test('pending order shows a cancellation proposal without enabling execution', async ({ page }) => {
+  const orderNumber = '11111111-1111-4111-8111-111111111111'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const token = 'c'.repeat(43)
+  const candidate = {
+    order_number: orderNumber, created_at: '2026-10-23T09:00:00+00:00',
+    product_summary: '测试商品 ×1', total: '129.00', status: 'pending_payment',
+  }
+  const detail = {
+    order_number: orderNumber, status: 'pending_payment', total: '129.00',
+    product_summary: '测试商品 ×1', expires_at: '2026-10-23T09:30:00+00:00',
+    close_reason: null, shipping_company: null, tracking_number: null, shipped_at: null,
+  }
+  const bodies: Record<string, unknown>[] = []
+  await page.route('**/api/customer-service/pages', route => route.fulfill({ status: 201, json: {
+    ...response('ok'), data: { page_instance_id: 'page-cancel', consultation_id: 'consultation-cancel' },
+  } }))
+  await page.route('**/api/customer-service/messages', async route => {
+    const body = route.request().postDataJSON()
+    bodies.push(body)
+    if (body.text === '申请取消订单') {
+      await route.fulfill({ json: {
+        ...response('ok'),
+        data: { reply: '已生成取消确认方案；确认执行尚未开放。取消后将恢复商品库存，操作不可撤销，且购物车不会恢复。', cards: [], citations: [] },
+        confirmation_card: {
+          operation_id: operationId, order_number: orderNumber, status: 'pending_payment',
+          product_summary: '测试商品 ×1', total: '129.00', currency: 'CNY',
+          expires_at: '2026-10-23T09:02:00+00:00', confirmation_token: token,
+        },
+      } })
+      return
+    }
+    const data = body.selected_order_id
+      ? { reply: '已查询订单信息', cards: [{ type: 'order_detail', order: detail }], citations: [] }
+      : { reply: '请选择要查询的订单', cards: [{ type: 'order', order: candidate }], citations: [] }
+    await route.fulfill({ json: { ...response('ok'), data } })
+  })
+  await page.goto('/customer-service.html')
+  await page.getByRole('button', { name: '查询我的订单' }).click()
+  const log = page.getByRole('log', { name: '客服聊天记录' })
+  await page.getByRole('button', { name: /查询订单 .* 的详情/ }).click()
+  await expect(log).toContainText('状态：待付款')
+  await page.getByRole('button', { name: '申请取消订单', exact: true }).click()
+  await expect(log).toContainText('取消确认方案')
+  await expect(log).toContainText(`订单号：${orderNumber}`)
+  await expect(log).toContainText('当前状态：待付款')
+  await expect(log).toContainText('取消后将恢复商品库存；操作不可撤销；购物车不会恢复。')
+  await expect(log).toContainText('确认执行尚未开放；本切片不会取消订单。')
+  await expect(page.getByRole('button', { name: '确认取消（尚未开放执行）' })).toBeDisabled()
+  expect(bodies.at(-1)).toMatchObject({ text: '申请取消订单', selected_order_id: orderNumber })
+  const storage = await page.evaluate(() => ({
+    local: JSON.stringify(localStorage), session: JSON.stringify(sessionStorage),
+  }))
+  expect(storage.local).not.toContain(token)
+  expect(storage.session).not.toContain(token)
+  expect(storage.local).not.toContain(operationId)
+  expect(storage.session).not.toContain(operationId)
+})
+
 test('anonymous order questions prompt login without showing order data', async ({ page }) => {
   await page.route('**/api/customer-service/pages', route => route.fulfill({ status: 201, json: {
     ...response('ok'), data: { page_instance_id: 'page-login', consultation_id: 'consultation-login' },

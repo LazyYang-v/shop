@@ -39,6 +39,14 @@
     .quick-questions { display: grid; gap: 12px; width: min(585px, calc(100% - 60px)); margin: 0 0 20px 60px; }
     .quick-question { position: relative; min-height: 53px; padding: 10px 32px; border: 1.5px solid #e99560; border-radius: 8px; background: #fff0df80; color: #df752f; font-size: 21px; font-weight: 600; }
     .quick-question:hover { background: #ffe6cc; }
+    .confirmation-card { width: min(585px, calc(100% - 60px)); margin: 0 0 20px 60px; padding: 16px 18px; border: 1.5px solid #e99560; border-radius: 9px; background: #fff8ef; font-size: 17px; line-height: 1.65; }
+    .confirmation-card h2 { margin: 0 0 8px; font-size: 19px; color: #8a4315; }
+    .confirmation-card p { margin: 4px 0; }
+    .confirmation-card .consequences { margin: 10px 0; color: #6b3a16; }
+    .confirmation-card .unavailable { margin: 12px 0 8px; color: #8a5a33; font-size: 15px; }
+    .confirmation-card button { min-height: 44px; padding: 8px 18px; border: 0; border-radius: 7px; background: #e7d7c8; color: #7b6a5c; font-size: 16px; cursor: not-allowed; }
+    .confirmation-card button[data-confirmation-action] { opacity: .85; }
+    .confirmation-card .invalid-note { margin: 10px 0 0; color: #b3261e; font-size: 14px; }
     .hot { position: absolute; top: -8px; left: -2px; display: grid; place-items: center; width: 21px; height: 21px; border-radius: 50%; background: #f44e42; color: #fff; font-size: 13px; font-weight: 400; }
     .chevron { position: absolute; right: 14px; top: 50%; width: 9px; height: 9px; border-top: 1.5px solid currentColor; border-right: 1.5px solid currentColor; transform: translateY(-50%) rotate(45deg); }
     .message.user { justify-content: flex-end; }
@@ -74,6 +82,7 @@
       .bubble { font-size: 16px; padding: 13px 12px; max-width: calc(100% - 48px); }
       .quick-questions { margin-left: 46px; width: calc(100% - 46px); gap: 11px; }
       .quick-question { min-height: 46px; font-size: 16px; padding: 10px 22px; }
+      .confirmation-card { width: calc(100% - 46px); margin-left: 46px; font-size: 15px; padding: 13px 14px; }
       .composer { padding: 10px 12px max(12px, env(safe-area-inset-bottom)); }
       .shortcuts { margin-bottom: 14px; padding: 0 3px; gap: 12px; }
       .order-link { font-size: 16px; padding: 8px 12px; }
@@ -179,6 +188,7 @@
       submitMessage(input.value);
     });
     let consultation = null;
+    let confirmation = null;
     let consultationBusy = false;
     let renewalTimer = null;
     const handoffKey = 'shop.customer-service.handoff';
@@ -197,9 +207,11 @@
     }
     function invalidateConsultation() {
       consultation = null;
+      confirmation = null;
       clearTimeout(renewalTimer);
       saveHandoff(null);
-      messages.querySelectorAll('[data-consultation-action]').forEach(button => { button.disabled = true; });
+      messages.querySelectorAll('[data-consultation-action], [data-confirmation-action]')
+        .forEach(button => { button.disabled = true; });
     }
     const accountStatus = document.getElementById('account-status');
     const loginButton = document.getElementById('login-button');
@@ -295,23 +307,31 @@
     function scheduleRenewal() {
       clearTimeout(renewalTimer);
       if (!consultation) return;
-      const current = consultation;
-      renewalTimer = setTimeout(async () => {
-        if (consultation !== current) return;
-        try {
-          const renewed = await consultationPost('pages/renew', {
-            page_instance_id: current.page_instance_id, handoff_token: current.handoff_token,
-          });
-          if (consultation === current) {
-            if (renewed) scheduleRenewal();
-            else invalidateConsultation();
-          }
-        } catch {
-          appendMessage('咨询续期未能确认，请重新开始商品咨询。');
-          invalidateConsultation();
-        }
-      }, 30000);
+      renewalTimer = setTimeout(() => { if (consultation) renewNow(); }, 30000);
     }
+    let renewalInFlight = false;
+    async function renewNow() {
+      if (!consultation || renewalInFlight) return;
+      renewalInFlight = true;
+      const current = consultation;
+      try {
+        const renewed = await consultationPost('pages/renew', {
+          page_instance_id: current.page_instance_id, handoff_token: current.handoff_token,
+        });
+        if (consultation === current) {
+          if (renewed) scheduleRenewal();
+          else invalidateConsultation();
+        }
+      } catch {
+        appendMessage('咨询续期未能确认，请重新开始商品咨询。');
+        invalidateConsultation();
+      } finally {
+        renewalInFlight = false;
+      }
+    }
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && consultation) renewNow();
+    });
     window.addEventListener('pagehide', () => clearTimeout(renewalTimer));
     window.addEventListener('pageshow', event => {
       if (event.persisted) invalidateConsultation();
@@ -368,6 +388,10 @@
       appendMessage(`查询订单 ${orderNumber}`, true);
       return runConsultation({ selected_order_id: orderNumber });
     }
+    async function requestCancel(orderNumber) {
+      appendMessage('申请取消订单', true);
+      return runConsultation({ text: '申请取消订单', selected_order_id: orderNumber });
+    }
     async function runConsultation(messageFields) {
       if (consultationBusy) return;
       consultationBusy = true;
@@ -417,6 +441,7 @@
           }
           if (card.type === 'order_detail' && validOrderDetail(card.order)) {
             appendMessage(orderDetailFacts(card.order));
+            if (card.order.status === 'pending_payment') appendCancelRequest(card.order.order_number);
             continue;
           }
           if (card.type !== 'product' || !validProduct(card.product)) continue;
@@ -429,6 +454,17 @@
           button.textContent = `咨询 ${card.product.name} 的价格与库存`;
           button.addEventListener('click', () => consultText(card.selection_text));
           messages.append(button);
+        }
+        if (result.confirmation_card !== undefined) {
+          const replay = result.code === 'card_unavailable';
+          if (!validConfirmationCard(result.confirmation_card, replay)) throw new Error('Invalid confirmation card');
+          appendConfirmationCard(result.confirmation_card, replay);
+          if (!replay) {
+            confirmation = {
+              operationId: result.confirmation_card.operation_id,
+              token: result.confirmation_card.confirmation_token,
+            };
+          }
         }
       } catch {
         appendMessage('商品咨询响应未能确认，请重新操作；页面不会自动重发咨询。');
@@ -444,6 +480,49 @@
       button.textContent = `查询订单 ${orderNumber.slice(0, 8)}… 的详情`;
       button.addEventListener('click', () => selectOrder(orderNumber));
       messages.append(button);
+    }
+    function appendCancelRequest(orderNumber) {
+      const button = document.createElement('button');
+      button.className = 'quick-question';
+      button.type = 'button';
+      button.dataset.consultationAction = 'true';
+      button.textContent = '申请取消订单';
+      button.addEventListener('click', () => requestCancel(orderNumber));
+      messages.append(button);
+    }
+    function appendConfirmationCard(card, replay) {
+      const section = document.createElement('section');
+      section.className = 'confirmation-card';
+      const heading = document.createElement('h2');
+      heading.textContent = '取消确认方案';
+      section.append(heading);
+      const facts = document.createElement('p');
+      facts.textContent = `订单号：${card.order_number}\n当前状态：${ORDER_STATUS_LABELS[card.status]}`
+        + `\n金额：¥${card.total}\n确认期限：${card.expires_at}`;
+      section.append(facts);
+      const consequences = document.createElement('p');
+      consequences.className = 'consequences';
+      consequences.textContent = '取消后将恢复商品库存；操作不可撤销；购物车不会恢复。';
+      section.append(consequences);
+      if (replay) {
+        const expired = document.createElement('p');
+        expired.className = 'invalid-note';
+        expired.textContent = '确认卡已失效，请重新申请取消方案。';
+        section.append(expired);
+      } else {
+        const unavailable = document.createElement('p');
+        unavailable.className = 'unavailable';
+        unavailable.textContent = '确认执行尚未开放；本切片不会取消订单。';
+        section.append(unavailable);
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.disabled = true;
+        button.dataset.confirmationAction = 'true';
+        button.textContent = '确认取消（尚未开放执行）';
+        section.append(button);
+      }
+      messages.append(section);
+      messages.scrollTop = messages.scrollHeight;
     }
     document.getElementById('start-consultation').addEventListener('click', () => consultText());
     document.getElementById('query-orders').addEventListener('click', () => consultText('查询我的订单'));
@@ -476,6 +555,21 @@
         && (order.close_reason === null || Object.hasOwn(CLOSE_REASON_LABELS, order.close_reason))
         && [order.shipping_company, order.tracking_number].every(value => value === null
           || (typeof value === 'string' && value.length >= 1 && value.length <= 100));
+    }
+    function validConfirmationCard(card, replay) {
+      const keys = replay
+        ? 'currency,expires_at,operation_id,order_number,product_summary,status,total'
+        : 'confirmation_token,currency,expires_at,operation_id,order_number,product_summary,status,total';
+      return card && typeof card === 'object' && !Array.isArray(card)
+        && Object.keys(card).sort().join(',') === keys
+        && ORDER_NUMBER_PATTERN.test(card.operation_id)
+        && ORDER_NUMBER_PATTERN.test(card.order_number)
+        && card.status === 'pending_payment'
+        && validTimestamp(card.expires_at)
+        && typeof card.product_summary === 'string' && card.product_summary.length <= 300
+        && typeof card.total === 'string' && /^\d+\.\d{2}$/.test(card.total)
+        && card.currency === 'CNY'
+        && (replay || (typeof card.confirmation_token === 'string' && /^[A-Za-z0-9_-]{43}$/.test(card.confirmation_token)));
     }
     function orderCandidateFacts(order) {
       return `订单号：${order.order_number}\n创建时间：${order.created_at}\n商品：${order.product_summary}`

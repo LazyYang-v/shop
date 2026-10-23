@@ -7,7 +7,9 @@ const email = process.env.SHOP_BROWSER_TEST_EMAIL
 const email2 = process.env.SHOP_BROWSER_TEST_EMAIL_2
 const password = process.env.SHOP_BROWSER_TEST_PASSWORD
 const orderId = process.env.SHOP_BROWSER_TEST_ORDER_ID
-assert.ok(email && email2 && password && /^[0-9a-f-]{36}$/.test(orderId ?? ''))
+const cancelOrderId = process.env.SHOP_BROWSER_TEST_CANCEL_ORDER_ID
+assert.ok(email && email2 && password && /^[0-9a-f-]{36}$/.test(orderId ?? '')
+  && /^[0-9a-f-]{36}$/.test(cancelOrderId ?? ''))
 const browser = await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' })
 try {
   for (const [label, viewport] of [['desktop', { width: 1440, height: 1000 }], ['mobile', { width: 390, height: 844 }]]) {
@@ -84,15 +86,17 @@ try {
   assert.equal(response.status(), 200)
   const listing = await response.json()
   assert.equal(listing.status, 'ok')
-  assert.equal(listing.data.cards.length, 1)
-  assert.deepEqual(Object.keys(listing.data.cards[0].order).sort(), ['created_at', 'order_number', 'product_summary', 'status', 'total'])
-  assert.equal(listing.data.cards[0].order.order_number, orderId)
-  assert.equal(listing.data.cards[0].order.total, '129.00')
+  assert.equal(listing.data.cards.length, 2)
+  assert.deepEqual(listing.data.cards.map(card => card.order.order_number).sort(), [orderId, cancelOrderId].sort())
+  for (const card of listing.data.cards) {
+    assert.deepEqual(Object.keys(card.order).sort(), ['created_at', 'order_number', 'product_summary', 'status', 'total'])
+    assert.equal(card.order.total, '129.00')
+  }
   assert.equal(response.request().postDataJSON().text, '查询我的订单')
   assert.equal('selected_order_id' in response.request().postDataJSON(), false)
   await ownerPage.waitForFunction(id => document.querySelector('[role="log"]').textContent.includes(id), orderId)
   pending = ownerPage.waitForResponse(item => new URL(item.url()).pathname.endsWith('/messages'))
-  await ownerPage.getByRole('button', { name: /查询订单 .* 的详情/ }).click()
+  await ownerPage.getByRole('button', { name: `查询订单 ${orderId.slice(0, 8)}… 的详情` }).click()
   response = await pending
   assert.equal(response.status(), 200)
   const detail = await response.json()
@@ -107,6 +111,77 @@ try {
   for (const forbidden of ['PRIVATE_PHONE_SENTINEL', 'PRIVATE_ADDRESS_SENTINEL', '13800138000', '文三路']) {
     assert.ok(!text.includes(forbidden))
   }
+
+  pending = ownerPage.waitForResponse(item => new URL(item.url()).pathname.endsWith('/messages'))
+  await ownerPage.getByRole('button', { name: `查询订单 ${cancelOrderId.slice(0, 8)}… 的详情` }).click()
+  response = await pending
+  assert.equal(response.status(), 200)
+  const cancelDetail = await response.json()
+  assert.equal(cancelDetail.data.cards[0].type, 'order_detail')
+  assert.equal(cancelDetail.data.cards[0].order.order_number, cancelOrderId)
+  assert.equal(cancelDetail.data.cards[0].order.status, 'pending_payment')
+  assert.equal(response.request().postDataJSON().selected_order_id, cancelOrderId)
+  const cancelRequest = ownerPage.getByRole('button', { name: '申请取消订单' })
+  assert.equal(await cancelRequest.count(), 1)
+  pending = ownerPage.waitForResponse(item => new URL(item.url()).pathname.endsWith('/messages'))
+  await cancelRequest.click()
+  response = await pending
+  assert.equal(response.status(), 200)
+  const proposal = await response.json()
+  const card = proposal.confirmation_card
+  assert.equal(proposal.status, 'ok')
+  assert.deepEqual(proposal.data.cards, [])
+  assert.deepEqual(Object.keys(card).sort(), ['confirmation_token', 'currency', 'expires_at', 'operation_id',
+    'order_number', 'product_summary', 'status', 'total'])
+  assert.equal(card.order_number, cancelOrderId)
+  assert.equal(card.status, 'pending_payment')
+  assert.equal(card.total, '129.00')
+  assert.equal(card.currency, 'CNY')
+  assert.match(card.operation_id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+  assert.notEqual(card.operation_id, cancelOrderId)
+  assert.match(card.confirmation_token, /^[A-Za-z0-9_-]{43}$/)
+  assert.ok(Date.parse(card.expires_at) > Date.now())
+  assert.ok(Date.parse(card.expires_at) <= Date.now() + 120000)
+  assert.equal(response.request().postDataJSON().text, '申请取消订单')
+  assert.equal(response.request().postDataJSON().selected_order_id, cancelOrderId)
+  const chatPayload = JSON.stringify({ data: proposal.data, code: proposal.code, message: proposal.message })
+  assert.ok(!chatPayload.includes(card.confirmation_token))
+  assert.ok(!chatPayload.includes(card.operation_id))
+
+  const confirmationCard = ownerPage.locator('.confirmation-card')
+  await confirmationCard.waitFor()
+  const cardText = await confirmationCard.textContent()
+  for (const expected of [cancelOrderId, '待付款', '¥129.00', '取消后将恢复商品库存；操作不可撤销；购物车不会恢复。',
+    '确认执行尚未开放；本切片不会取消订单。']) {
+    assert.ok(cardText.includes(expected))
+  }
+  const confirmButton = confirmationCard.getByRole('button', { name: '确认取消（尚未开放执行）' })
+  assert.equal(await confirmButton.count(), 1)
+  assert.equal(await confirmButton.isDisabled(), true)
+  assert.ok(!(await ownerLog.textContent()).includes(card.confirmation_token))
+  const storage = await ownerPage.evaluate(() => ({ local: { ...localStorage }, session: { ...sessionStorage } }))
+  for (const secret of [card.confirmation_token, card.operation_id]) {
+    assert.ok(!JSON.stringify(storage).includes(secret))
+    assert.ok(!ownerPage.url().includes(secret))
+    assert.ok(!(await ownerPage.content()).includes(secret))
+  }
+
+  await ownerPage.reload()
+  await ownerPage.waitForFunction(() => document.getElementById('account-status').textContent === '已登录买家')
+  assert.equal(await ownerPage.locator('.confirmation-card').count(), 0)
+  const restored = await ownerPage.evaluate(() => ({ ...sessionStorage }))
+  for (const secret of [card.confirmation_token, card.operation_id]) {
+    assert.ok(!JSON.stringify(restored).includes(secret))
+  }
+  assert.notEqual(restored['shop.customer-service.handoff'], card.confirmation_token)
+  pending = ownerPage.waitForResponse(item => new URL(item.url()).pathname.endsWith('/messages'))
+  await ownerPage.getByRole('button', { name: '查询我的订单' }).click()
+  response = await pending
+  assert.equal(response.status(), 200)
+  const afterHandoff = await response.json()
+  assert.equal(afterHandoff.data.cards.length, 2)
+  assert.equal('confirmation_card' in afterHandoff, false)
+
   await logout(ownerPage)
   pending = ownerPage.waitForResponse(item => new URL(item.url()).pathname.endsWith('/messages'))
   await ownerPage.getByRole('button', { name: '查询我的订单' }).click()

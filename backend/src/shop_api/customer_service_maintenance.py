@@ -5,6 +5,7 @@ import logging
 import time
 
 from shop_api.customer_service import cleanup_rate_limits
+from shop_api.customer_service_cancel import expire_due_cancel_operations
 from shop_api.customer_service_consultations import cleanup_consultations
 from shop_api.customer_service_model_budget import ModelBudget
 
@@ -17,6 +18,7 @@ class CustomerServiceMaintenance:
         self._tasks = [
             ("logs", 3600, lambda: log_writer.prune(clock())),
             ("consultations", 30, lambda: cleanup_consultations(session_factory, clock())),
+            ("cancel_operations", 30, lambda: expire_due_cancel_operations(session_factory, clock())),
             ("model_slots", 30, budget.reap_expired),
             ("model_evidence", 86400, budget.prune_ended),
             ("rate_limits", 3600, lambda: cleanup_rate_limits(session_factory, clock())),

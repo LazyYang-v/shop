@@ -54,11 +54,16 @@ def test_customer_service_browser_queries_real_isolated_catalog(client, tmp_path
     assert cancel_order.status_code == 201
     cancel_order_id = cancel_order.json()['id']
     from sqlalchemy import text as sql_text
+    from datetime import timedelta
     with client.app.state.session_factory.begin() as db:
         db.execute(sql_text("""UPDATE orders SET status='pending_receipt', shipping_company='虚构速运',
             tracking_number='DEMO-BROWSER-001', shipped_at=:now,
             phone='PRIVATE_PHONE_SENTINEL', detail='PRIVATE_ADDRESS_SENTINEL' WHERE id=:id"""),
                    {'now': client.app.state.clock(), 'id': order_id})
+        # The unpaid order expires shortly after issuance so the browser can
+        # observe the confirmation card deadline without waiting two minutes.
+        db.execute(sql_text("UPDATE orders SET expires_at=:expires WHERE id=:id"),
+                   {'expires': client.app.state.clock() + timedelta(seconds=8), 'id': cancel_order_id})
         # The synthetic catalog fixture fixes stock at 24; this seeded order is
         # display-only and must not make the verified fixture fail closed.
         db.execute(sql_text("UPDATE products SET stock=24 WHERE id='00000000-0000-0000-0000-000000000001'"))
@@ -92,7 +97,6 @@ def test_customer_service_browser_queries_real_isolated_catalog(client, tmp_path
         return {'object': 'chat.completion', 'choices': [{'finish_reason': 'stop' if tool_reply else 'tool_calls', 'message': message}],
                 'usage': {'prompt_tokens': 150, 'completion_tokens': 30}}
     app = create_app(database_url=url, synthetic_product_exchange=synthetic_exchange)
-    from datetime import timedelta
     from fastapi import Header, HTTPException
     test_clock_key = secrets.token_urlsafe(32)
     clock_offset = timedelta()

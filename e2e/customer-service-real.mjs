@@ -151,7 +151,8 @@ try {
   const confirmationCard = ownerPage.locator('.confirmation-card')
   await confirmationCard.waitFor()
   const cardText = await confirmationCard.textContent()
-  for (const expected of [cancelOrderId, '待付款', '¥129.00', '取消后将恢复商品库存；操作不可撤销；购物车不会恢复。',
+  for (const expected of [`操作编号：${card.operation_id}`, cancelOrderId, '待付款', '¥129.00',
+    '取消后将恢复商品库存；操作不可撤销；购物车不会恢复。',
     '确认执行尚未开放；本切片不会取消订单。']) {
     assert.ok(cardText.includes(expected))
   }
@@ -163,8 +164,14 @@ try {
   for (const secret of [card.confirmation_token, card.operation_id]) {
     assert.ok(!JSON.stringify(storage).includes(secret))
     assert.ok(!ownerPage.url().includes(secret))
-    assert.ok(!(await ownerPage.content()).includes(secret))
   }
+  assert.ok(!(await ownerPage.content()).includes(card.confirmation_token))
+  assert.ok((await ownerPage.content()).includes(card.operation_id))
+
+  const invalidNote = confirmationCard.locator('.invalid-note')
+  await invalidNote.waitFor({ timeout: 15000 })
+  assert.ok((await invalidNote.textContent()).includes('确认方案已过期，请重新申请取消方案。'))
+  assert.equal(await confirmButton.isDisabled(), true)
 
   await ownerPage.reload()
   await ownerPage.waitForFunction(() => document.getElementById('account-status').textContent === '已登录买家')

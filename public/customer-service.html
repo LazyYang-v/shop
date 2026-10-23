@@ -189,8 +189,10 @@
     });
     let consultation = null;
     let confirmation = null;
+    let selectedOrderNumber = null;
     let consultationBusy = false;
     let renewalTimer = null;
+    const confirmationTimers = new Set();
     const handoffKey = 'shop.customer-service.handoff';
     function saveHandoff(token) {
       try {
@@ -208,10 +210,42 @@
     function invalidateConsultation() {
       consultation = null;
       confirmation = null;
+      selectedOrderNumber = null;
       clearTimeout(renewalTimer);
       saveHandoff(null);
+      expireConfirmationCards('咨询已失效，请重新开始并选择订单。');
       messages.querySelectorAll('[data-consultation-action], [data-confirmation-action]')
         .forEach(button => { button.disabled = true; });
+    }
+    function expireConfirmationCard(section, note) {
+      section.querySelectorAll('[data-confirmation-action]').forEach(button => { button.disabled = true; });
+      if (section.querySelector('.invalid-note')) return;
+      const expired = document.createElement('p');
+      expired.className = 'invalid-note';
+      expired.textContent = note;
+      section.append(expired);
+    }
+    function expireConfirmationCards(note) {
+      for (const timer of confirmationTimers) clearTimeout(timer);
+      confirmationTimers.clear();
+      confirmation = null;
+      messages.querySelectorAll('.confirmation-card').forEach(section => expireConfirmationCard(section, note));
+    }
+    function armConfirmationExpiry(section, card) {
+      const deadline = Date.parse(card.expires_at);
+      const expire = () => {
+        if (confirmation && confirmation.operationId === card.operation_id) confirmation = null;
+        expireConfirmationCard(section, '确认方案已过期，请重新申请取消方案。');
+      };
+      if (!Number.isFinite(deadline) || deadline <= Date.now()) {
+        expire();
+        return;
+      }
+      const timer = setTimeout(() => {
+        confirmationTimers.delete(timer);
+        expire();
+      }, deadline - Date.now());
+      confirmationTimers.add(timer);
     }
     const accountStatus = document.getElementById('account-status');
     const loginButton = document.getElementById('login-button');
@@ -309,6 +343,13 @@
       if (!consultation) return;
       renewalTimer = setTimeout(() => { if (consultation) renewNow(); }, 30000);
     }
+    function scheduleRenewalRetry() {
+      // A transient renewal failure keeps the page and any confirmation card;
+      // retry at the renewal limit rather than discarding still-valid state.
+      clearTimeout(renewalTimer);
+      if (!consultation) return;
+      renewalTimer = setTimeout(() => { if (consultation) renewNow(); }, 15000);
+    }
     let renewalInFlight = false;
     async function renewNow() {
       if (!consultation || renewalInFlight) return;
@@ -318,13 +359,11 @@
         const renewed = await consultationPost('pages/renew', {
           page_instance_id: current.page_instance_id, handoff_token: current.handoff_token,
         });
-        if (consultation === current) {
-          if (renewed) scheduleRenewal();
-          else invalidateConsultation();
-        }
+        if (consultation !== current) return;
+        if (renewed) scheduleRenewal();
+        else scheduleRenewalRetry();
       } catch {
-        appendMessage('咨询续期未能确认，请重新开始商品咨询。');
-        invalidateConsultation();
+        if (consultation === current) scheduleRenewalRetry();
       } finally {
         renewalInFlight = false;
       }
@@ -384,11 +423,19 @@
     async function consultText(text = '查看演示商品') {
       return runConsultation({ text });
     }
+    function noteSelection(orderNumber) {
+      if (selectedOrderNumber !== null && selectedOrderNumber !== orderNumber) {
+        expireConfirmationCards('订单选择已变化，请重新申请取消方案。');
+      }
+      selectedOrderNumber = orderNumber;
+    }
     async function selectOrder(orderNumber) {
+      noteSelection(orderNumber);
       appendMessage(`查询订单 ${orderNumber}`, true);
       return runConsultation({ selected_order_id: orderNumber });
     }
     async function requestCancel(orderNumber) {
+      noteSelection(orderNumber);
       appendMessage('申请取消订单', true);
       return runConsultation({ text: '申请取消订单', selected_order_id: orderNumber });
     }
@@ -458,8 +505,10 @@
         if (result.confirmation_card !== undefined) {
           const replay = result.code === 'card_unavailable';
           if (!validConfirmationCard(result.confirmation_card, replay)) throw new Error('Invalid confirmation card');
+          if (!replay) expireConfirmationCards('已有新的取消确认方案，请使用最新方案。');
           appendConfirmationCard(result.confirmation_card, replay);
           if (!replay) {
+            // The plaintext credential lives only in page memory until expiry.
             confirmation = {
               operationId: result.confirmation_card.operation_id,
               token: result.confirmation_card.confirmation_token,
@@ -497,7 +546,8 @@
       heading.textContent = '取消确认方案';
       section.append(heading);
       const facts = document.createElement('p');
-      facts.textContent = `订单号：${card.order_number}\n当前状态：${ORDER_STATUS_LABELS[card.status]}`
+      facts.textContent = `操作编号：${card.operation_id}\n订单号：${card.order_number}`
+        + `\n当前状态：${ORDER_STATUS_LABELS[card.status]}`
         + `\n金额：¥${card.total}\n确认期限：${card.expires_at}`;
       section.append(facts);
       const consequences = document.createElement('p');
@@ -505,10 +555,10 @@
       consequences.textContent = '取消后将恢复商品库存；操作不可撤销；购物车不会恢复。';
       section.append(consequences);
       if (replay) {
-        const expired = document.createElement('p');
-        expired.className = 'invalid-note';
-        expired.textContent = '确认卡已失效，请重新申请取消方案。';
-        section.append(expired);
+        const replayNote = document.createElement('p');
+        replayNote.className = 'invalid-note';
+        replayNote.textContent = '确认凭据未随重发返回，请重新申请取消方案。';
+        section.append(replayNote);
       } else {
         const unavailable = document.createElement('p');
         unavailable.className = 'unavailable';
@@ -520,6 +570,7 @@
         button.dataset.confirmationAction = 'true';
         button.textContent = '确认取消（尚未开放执行）';
         section.append(button);
+        armConfirmationExpiry(section, card);
       }
       messages.append(section);
       messages.scrollTop = messages.scrollHeight;

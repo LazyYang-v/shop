@@ -20,10 +20,11 @@ from sqlalchemy.orm import Mapped, Session, mapped_column
 from shop_api.customer_service import CustomerServiceUnavailable, QueryDeadline
 from shop_api.customer_service_cancel import (
     CANCEL_TRIGGER_TEXT,
+    PROPOSAL_CARD_FIELDS,
     CancellationTools,
     invalidate_pending_proposals,
     invalidate_pending_proposals_for_pages,
-    sanitize_proposal_response,
+    replay_proposal_response,
 )
 from shop_api.customer_service_orders import OrderTools, looks_like_order_question, understand_order
 from shop_api.customer_service_products import ProductTools
@@ -368,8 +369,7 @@ def _cancel_turn(payload: MessageInput, request: Request, record: AuthSession, d
     require_demo_buyer(request, record, db)
     page, consultation = _page(db, record, payload.page_instance_id, now)
     data = result['data']
-    card = {field: data[field] for field in ('operation_id', 'status', 'product_summary',
-                                             'total', 'currency', 'expires_at')}
+    card = {field: data[field] for field in PROPOSAL_CARD_FIELDS}
     card['order_number'] = str(selected_order_id)
     card['confirmation_token'] = token
     response = _envelope(request, 'ok', {
@@ -379,7 +379,7 @@ def _cancel_turn(payload: MessageInput, request: Request, record: AuthSession, d
     request.app.state.customer_service_log_writer.write(
         request.state.customer_service_request_id, 'propose_cancel', '',
         int((time.monotonic() - started) * 1000), 1, now)
-    _store_response(db, key, sanitize_proposal_response(response))
+    _store_response(db, key, replay_proposal_response(response))
     page.last_used_at = consultation.last_used_at = now
     db.commit()
     return response

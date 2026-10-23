@@ -35,7 +35,8 @@ EXECUTED = "executed"
 REJECTED = "rejected"
 EXPIRED = "expired"
 
-_PROPOSAL_KEYS = {"operation_id", "status", "product_summary", "total", "currency", "expires_at"}
+PROPOSAL_CARD_FIELDS = ("operation_id", "status", "product_summary", "total", "currency", "expires_at")
+_PROPOSAL_KEYS = set(PROPOSAL_CARD_FIELDS)
 _MONEY = re.compile(r"^[0-9]+\.[0-9]{2}$")
 _ORDER_NUMBER = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
@@ -102,8 +103,8 @@ def order_product_summary(session: Session, order_id: UUID) -> str:
     return "、".join(f"{item.name} ×{item.quantity}" for item in items)[:300]
 
 
-def sanitize_proposal_response(response: dict) -> dict:
-    """Persisted/deduped copy: no plaintext token and no credential material."""
+def replay_proposal_response(response: dict) -> dict:
+    """Persisted/deduped copy: replay withholds the plaintext credential."""
     stored = dict(response)
     card = dict(stored.get("confirmation_card") or {})
     card.pop("confirmation_token", None)
@@ -157,10 +158,6 @@ class CancellationTools:
         self._deadline = deadline or QueryDeadline(45.0)
         self._confirmation_token: str | None = None
 
-    @property
-    def confirmation_token(self) -> str | None:
-        return self._confirmation_token
-
     def take_confirmation_token(self) -> str | None:
         token, self._confirmation_token = self._confirmation_token, None
         return token
@@ -206,16 +203,17 @@ class CancellationTools:
         self._session.add(operation)
         self._session.flush()
         self._confirmation_token = token
+        summary = {
+            "operation_id": str(operation.id),
+            "status": order.status,
+            "product_summary": order_product_summary(self._session, order.id),
+            "total": str(order.total),
+            "currency": "CNY",
+            "expires_at": expires_at.isoformat(),
+        }
         return {
             "request_id": self._request_id,
             "queried_at": now.isoformat(),
             "status": "proposed",
-            "data": {
-                "operation_id": str(operation.id),
-                "status": order.status,
-                "product_summary": order_product_summary(self._session, order.id),
-                "total": str(order.total),
-                "currency": "CNY",
-                "expires_at": expires_at.isoformat(),
-            },
+            "data": {field: summary[field] for field in PROPOSAL_CARD_FIELDS},
         }

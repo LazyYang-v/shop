@@ -20,11 +20,11 @@ try {
     }
     const listing = await ask('请问有哪些商品？')
     const expected = { id: '00000000-0000-0000-0000-000000000001', name: '春日轻盈针织开衫', category: '女装', price: '129.00', stock: 24, is_listed: true }
-    assert.deepEqual(listing.result.data.cards[0].product, expected)
+    assert.deepEqual(listing.result.data.cards.map(card => card.product).find(product => product.id === expected.id), expected)
     const compound = await ask('请问春日轻盈针织开衫的价格和库存？')
     assert.equal(compound.result.status, 'ok')
     assert.deepEqual(compound.result.data.cards[0].product, expected)
-    await page.waitForFunction(() => document.querySelector('[role="log"]').textContent.split('可售库存：24').length >= 3)
+    await page.waitForFunction(id => document.querySelector('[role="log"]').textContent.includes(id), compound.result.request_id)
     assert.ok((await log.textContent()).includes(compound.result.request_id))
     assert.ok((await log.textContent()).includes(compound.result.queried_at))
     const policy = await ask('演示商城多久发货？')

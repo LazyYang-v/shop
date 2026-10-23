@@ -50,10 +50,10 @@
 | 项目 | 当前记录 |
 |---|---|
 | 新演示服务启动 | 3服务运行；http://127.0.0.1:18011/customer-service.html，真实健康检查及两买家/管理员/匿名浏览器验收通过 |
-| API/数据库固定镜像 | API已构建，ID sha256:28f55f2a2915d8cf015db574f7048f187996abd320ebc286e6f5b892e05a06a0；PostgreSQL固定digest，已实际启动 |
+| API/数据库固定镜像 | 当前主演示API已重建为本地镜像ID sha256:7cd1878d5b7986eb20164b9ce1dfe71eb90b0501294fd60266dd954665ca3fe8（tag shop-customer-service-demo-api:20261023-policy，源码提交1cf69a1的干净归档）；先前镜像ID sha256:28f55f2a2915…保留但不运行。PostgreSQL固定digest，卷未重建 |
 | 商品fixture | products.v1.json，4件虚构商品；hash见Compose及README |
-| 合成政策fixture | policies.synthetic.v1.json，合成标签/权威登记/索引残留/研究资料；hash `79a224…3163`。API及真实Chrome测试通过，0模型调用、0 WeKnora请求；本轮未用新镜像重启已运行演示，故容器内合成政策验收仍待执行 |
+| 合成政策fixture | policies.synthetic.v1.json，合成标签/权威登记/索引残留/研究资料；hash `79a224…3163`。已在主演示容器内完成API矩阵（发货v2、包邮残留unavailable、礼品包装no_match、歧义clarification）及真实Chrome桌面/移动验收；0模型调用、0 WeKnora请求。容器日志20条仅允许字段，哨兵/政策正文0命中；API无WeKnora/模型/令牌环境变量且仅连接internal网络 |
 | 公开注册与代理配置 | 真实API注册403、两买家商品事实/咨询通过，管理员403/匿名401；Nginx -t通过，转发头清空、无上游重试，API禁proxy headers |
-| 完整文件日志出口 | API日志目录0700/UID10001、分片0600；11条记录仅允许字段，无自由文本哨兵，API临时目录空；API/Web只读根、Docker logging=none。PostgreSQL collector关闭、statement=none、duration=-1、stderr出口；Web临时文件只在tmpfs，access关闭、error=/dev/null |
+| 完整文件日志出口 | API日志目录0700/UID10001、分片0600；最初11条记录仅允许字段，无自由文本哨兵；本次合成政策验收后为20条，工具含search_policy，政策正文/哨兵0命中。API临时目录空；API/Web只读根、Docker logging=none。PostgreSQL collector关闭、statement=none、duration=-1、stderr出口；Web临时文件只在tmpfs，access关闭、error=/dev/null |
 | 恢复开始/结束/耗时 | 新卷迁移、fixture初始化与三服务启动7.454秒；从恢复状态文件创建至浏览器及资格失效检查全部完成的保守总耗时124.32秒，包含人工检查间隔，低于1800秒目标。旧会话401、旧密码401、旧咨询410，新密码及商品查询200；运行期咨询/证据未恢复。临时机器记录见恢复私有目录recovery-result.json，不含秘密 |
 | 模型收费请求 | 本轮0；真实调用单独审批请求数及金额 |

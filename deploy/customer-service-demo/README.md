@@ -2,6 +2,8 @@
 
 状态：用户已批准配置方案，本目录仅准备差异，未启动。关联[审核稿](../../docs/customer-service-demo-configuration-plan.md)。不得在缺少下述保护时启动商城API或模型分支。
 
+> 2026-10-23 后续更新：主演示已按用户授权用合成政策镜像完成重启与容器内验收，详见[验收单](acceptance.md)及[合成政策实施记录](../../docs/customer-service-policy-implementation.md)。真实 WeKnora、真实商城政策及真实模型 exchange 仍关闭；下文“未启动/未生成/未初始化”等历史限制保留为最初审查记录，当前运行状态以验收单为准。
+
 ## 文件与差异
 
 - compose.yaml是独立配置，不与既有WeKnora或商城Compose叠加；固定项目名shop-customer-service-demo，无container_name或external卷/网络，不继承现有.env。

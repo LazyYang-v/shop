@@ -105,7 +105,7 @@ def test_anonymous_compound_question_completes_synthetic_tool_loop(consultation_
         transcripts.append(json.dumps(payload, ensure_ascii=False))
         assert token == ''
         assert 0 < timeout <= 20
-        message = ({'role': 'assistant', 'content': None, 'tool_calls': [{'id': 'call_0a3b9f27c1', 'type': 'function',
+        message = ({'role': 'assistant', 'content': None, 'tool_calls': [{'id': 'call_0a3b9f27c1', 'index': 0, 'type': 'function',
             'function': {'name': 'get_product', 'arguments': '{"product_ref":"product_1"}'}}]}
             if len(transcripts) == 1 else {'role': 'assistant', 'content': '{"intent":"price_stock","product_refs":["product_1"]}'})
         return {'object': 'chat.completion', 'choices': [{'finish_reason': 'tool_calls' if len(transcripts) == 1 else 'stop', 'message': message}],
@@ -137,6 +137,8 @@ def test_anonymous_compound_question_completes_synthetic_tool_loop(consultation_
 
 @pytest.mark.parametrize('bad_call', [
     {'id': 'call_1/PRIVATE_SENTINEL', 'type': 'function', 'function': {'name': 'get_product', 'arguments': '{"product_ref":"product_1"}'}},
+    {'id': 'call_1', 'type': 'function', 'index': 0, 'extra': 'unexpected', 'function': {'name': 'get_product', 'arguments': '{"product_ref":"product_1"}'}},
+    {'id': 'call_1', 'type': 'function', 'index': 'zero', 'function': {'name': 'get_product', 'arguments': '{"product_ref":"product_1"}'}},
     {'id': 'call_1', 'type': 'function', 'function': {'name': 'get_product', 'arguments': '{"product_ref":"product_999"}'}},
     {'id': 'call_1', 'type': 'function', 'function': {'name': 'get_product', 'arguments': '{"product_ref":"product_1","sql":"secret"}'}},
     {'id': 'call_1', 'type': 'function', 'function': {'name': 'admin', 'arguments': '{}'}},

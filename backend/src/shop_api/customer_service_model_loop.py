@@ -65,7 +65,13 @@ def _run_product_loop(request, session_id, deadline, mcp, product_id, transport,
             raise CustomerServiceUnavailable
         sanitized_calls, replies = [], []
         for call in calls:
-            if (not isinstance(call, dict) or set(call) != {'id', 'type', 'function'} or call['type'] != 'function'
+            keys = set(call) if isinstance(call, dict) else set()
+            # OpenAI-compatible providers add a non-negative integer `index` to each
+            # tool call. It is not echoed; any other unknown key remains rejected.
+            if (not isinstance(call, dict) or not {'id', 'type', 'function'} <= keys
+                    or keys - {'id', 'type', 'function', 'index'}
+                    or ('index' in call and (type(call['index']) is not int or call['index'] < 0))
+                    or call['type'] != 'function'
                     or not isinstance(call['id'], str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', call['id'])
                     or call['id'] in used_ids):
                 raise CustomerServiceUnavailable

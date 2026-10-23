@@ -50,7 +50,7 @@
 | B05 | 超过 10 页面、闲置 10 分钟、咨询 30 分钟/24 小时 | LRU 原子撤销旧资格；到期不可续活；新标签独立，合法交接只消费一次 | 待本轮 | 咨询 `test_lru_evicts_oldest_and_expiry_cannot_be_renewed`、`test_consultation_idle_and_absolute_deadlines`、`test_handoff_consumes_predecessor_and_renewal_keeps_token`；方案 LRU/交接测试 |
 | B06 | 消息超过 16KiB/2000 码点、额外字段、非法页码、重复消息换正文 | 拒绝输入；同消息同正文持久重放不重复工具或签发 | 待本轮 | 咨询 `test_byte_and_codepoint_limits_and_csrf`、`test_uncontrolled_inputs_and_unknown_fields_rejected`、`test_list_select_and_dedupe_do_not_repeat_tools`；方案重放测试 |
 | B07 | 撤回/未来/过期/删除残留政策或未知映射 | 无资格引用；conflict/no_match/unavailable 分别呈现 | 待本轮 | 政策 `test_withdrawn_expired_future_and_deleted_residue_are_never_current_basis`、`test_policy_message_keeps_no_match_conflict_and_unavailable_distinct` |
-| B08 | 分类工具次数、重复规范参数、模型请求/用量/时间上限 | 不挪用分类额度，不换未批准工具；只展示已核验事实 | 工作区模型组合定向 6 项通过；待合入完整回归 | `test_customer_service_orders.py::test_synthetic_composition_stops_safely_with_verified_partial_results[duplicate/execute/extra/withdraw/unfinished/budget]`；商品与模型预算回归 |
+| B08 | 分类工具次数、重复规范参数、模型请求/用量/时间上限 | 不挪用分类额度，不换未批准工具；只展示已核验事实 | 代理报告前 6 个组合失败参数通过；最后 4 个参数及整套集成回归待放行 | `test_customer_service_orders.py::test_synthetic_composition_stops_safely_with_verified_partial_results[duplicate/execute/extra/withdraw/unfinished/budget/request_limit/no_selection/identity/private_text]`；商品与模型预算回归 |
 
 ### 取消、恢复及运行回归
 
@@ -77,7 +77,7 @@ R06 是同一隔离库上的应用重启，R09 是从版本化 fixture 创建新
 | S03 | 退出、账号切换、会话到期或旧页面请求 | 旧授权失效；停止核验，不能跨会话复用 | 待本轮 | 订单 `test_invalid_session_logout_and_account_switch_invalidate_old_authorization`；方案跨买家及交接测试；Playwright 身份失效停止 |
 | S04 | 缺 CSRF、错误 Origin、篡改页面/咨询/操作/凭据 | 拒绝且不改变订单；编号本身不是授权 | 待本轮 | 咨询 CSRF/绑定测试；方案 `test_confirmation_rejects_missing_csrf_wrong_origin_and_wrong_binding`、`test_reconcile_is_protected_and_bound_to_original_buyer_page` |
 | S05 | 商品/索引含恶意指令，输入混合私人文本、额外身份或未批准工具 | 文案只当数据；本地澄清或受控拒绝；无越权执行/身份/秘密发送 | 待本轮 | 咨询 `test_unrecognized_private_text_never_enters_exchange`、`test_malformed_model_calls_fail_closed_without_replay`；政策注入测试；#9 组合场景 |
-| S06 | 签发确认卡、模型工具结果、页面 DOM/URL/storage、安全日志 | 凭据仅一次浏览器内存，服务端只存哈希；模型无订单号、地址电话、运单号和秘密 | 工作区六工具模型定向通过；待合入全边界回归 | `test_customer_service_orders.py::test_synthetic_composition_uses_six_tools_without_private_data_or_execution`；方案哈希持久化测试、真实浏览器哨兵及存储检查 |
+| S06 | 签发确认卡、模型工具结果、页面 DOM/URL/storage、安全日志 | 凭据仅一次浏览器内存，服务端只存哈希；模型无订单号、地址电话、运单号和秘密 | 代理报告六工具模型定向通过；已合入，整套数据库及真实 Chrome 重跑待放行 | `test_customer_service_orders.py::test_synthetic_composition_uses_six_tools_without_private_data_or_execution`；方案哈希持久化测试、真实浏览器哨兵及存储检查 |
 | S07 | 自然语言“好的”、模型请求 confirm/reconcile/任意 URL/SQL | 不执行；确认/核验不在模型工具集，目标只能取服务端选择 | 待本轮 | 方案 `test_ordinary_chat_text_is_not_consent_and_proposal_logs_are_allowlisted`；MCP extras/mismatch；#9 模型组合测试 |
 | S08 | 未批准账号/管理员、fixture 修改、共享额度存储故障 | 客服 fail-closed，无管理员代查或每进程静默回退 | 待本轮 | `test_customer_service_admission.py`、`test_customer_service_startup.py`、共享限流与模型预算故障测试 |
 

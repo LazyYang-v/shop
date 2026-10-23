@@ -95,7 +95,7 @@ R06 是同一隔离库上的应用重启，R09 是从版本化 fixture 创建新
 | 当前分支 Playwright 页面模拟套件 | **26 passed（24.2 秒）** | 在 `039c7c4` 运行完整 `e2e/customer-service.spec.ts`；逐项来源、确认、未知结果与生命周期均通过。与真实 API 证据分开，不证明事务或外部依赖 |
 | 全后端类型检查 | 未通过：仍为 18 项既有诊断，无新增 | 合入前后运行 `uv run --project backend ty check backend/src/shop_api`；分布均为 cancel 7、model_budget 3、model_transport 5、spend_guard 1、reconcile_demo_catalog 2 |
 | 构建、变更模块类型及语法/差异检查 | **通过** | `npm run build`、四个变更生产模块 `ty check`、Node 脚本语法、六个变更 Python 文件 AST、`git diff 12f9346...HEAD --check`；不把基线失败写成全项目类型通过。85 个本地链接/锚点检查通过 |
-| 两轴代码审查 | 初审完成：规范 2 项、规格 3 项，重合后 3 处待修复 | 固定 `12f9346...039c7c4`，Standards 与 Spec 分开记录在[组合审查](customer-service-composition-review.md)；超时部分结果、后续故障保留独立事实、重试计入分类/总额度 |
+| 两轴代码审查 | 初审完成：规范 2 项、规格 3 项，重合后 3 处；另发现 1 处实测页面状态问题，统一修复中 | 固定 `12f9346...039c7c4`，Standards 与 Spec 分开记录在[组合审查](customer-service-composition-review.md)；超时部分结果、后续故障保留独立事实、重试计入分类/总额度；截图发现终态成功后旧未知说明未更新 |
 
 ## 本地重复验收入口
 

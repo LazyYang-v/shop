@@ -24,6 +24,10 @@ from shop_api.customer_service_admission import require_product_reader, require_
 
 LIST_PRODUCTS_TEXT = "查看演示商品"
 PRODUCT_SELECTION_PREFIX = "查看演示商品："
+_POLICY_ENVELOPE_STATUS = {
+    "ok": "ok", "no_match": "empty", "conflict": "unavailable",
+    "unavailable": "unavailable", "needs_clarification": "needs_clarification",
+}
 _UUID4 = r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 _TOKEN = r"^[A-Za-z0-9_-]{43}$"
 
@@ -316,13 +320,11 @@ def build_consultation_router(session_dependency, current_session):
                 data = {'reply': answer.reply, 'cards': [], 'citations': list(answer.citations)}
                 if registry is not None and index is not None:
                     data.update({'synthetic': True, 'policy_notice': SYNTHETIC_LABEL})
-                response = _envelope(request, answer.status, data,
+                response = _envelope(request, _POLICY_ENVELOPE_STATUS[answer.status], data,
                                      **({'code': answer.code} if answer.code else {}))
                 if answer.status != 'needs_clarification':
-                    error = {'ok': '', 'no_match': 'policy_no_match', 'conflict': 'policy_conflict',
-                             'unavailable': 'policy_unavailable'}[answer.status]
                     request.app.state.customer_service_log_writer.write(
-                        request.state.customer_service_request_id, 'search_policy', error,
+                        request.state.customer_service_request_id, 'search_policy', answer.code or '',
                         int((time.monotonic() - started) * 1000), len(answer.citations), now)
             db.get(ConsultationMessage, key).response = response
             page.last_used_at = consultation.last_used_at = request.app.state.clock()

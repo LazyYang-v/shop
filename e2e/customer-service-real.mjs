@@ -38,7 +38,7 @@ try {
     assert.ok(!(await log.textContent()).includes('PRIVATE_POLICY_SENTINEL'))
     assert.ok(!(await log.textContent()).includes('PRIVATE_RESEARCH_SENTINEL'))
     const noMatch = await ask('演示商城礼品包装政策是什么？')
-    assert.equal(noMatch.result.status, 'no_match')
+    assert.equal(noMatch.result.status, 'empty')
     assert.equal(noMatch.result.code, 'policy_no_match')
     assert.deepEqual(noMatch.result.data.citations, [])
     await page.waitForFunction(() => document.querySelector('[role="log"]').textContent.includes('非商城政策'))

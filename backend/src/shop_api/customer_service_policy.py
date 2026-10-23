@@ -74,20 +74,14 @@ class PolicySearchResult:
 
 
 class PolicyRegistry:
-    def __init__(self, records: tuple[PolicyRecord, ...], *, publication_validated: bool = True):
+    def __init__(self, records: tuple[PolicyRecord, ...]):
         self._records = tuple(records)
         self._by_document = {(record.knowledge_base_id, record.knowledge_id): record
                              for record in records}
         self._by_key = {(record.policy_id, record.version): record for record in records}
         if len(self._by_document) != len(records) or len(self._by_key) != len(records):
             raise PolicyPublicationError("Policy identity and index mapping must be unique")
-        if publication_validated:
-            _validate_publication(self._records)
-
-    @classmethod
-    def from_registrations(cls, values, *, publication_validated: bool = True) -> PolicyRegistry:
-        return cls(tuple(_parse_record(value) for value in values),
-                   publication_validated=publication_validated)
+        _validate_publication(self._records)
 
     def lookup(self, knowledge_base_id: str, knowledge_id: str) -> PolicyRecord | None:
         return self._by_document.get((knowledge_base_id, knowledge_id))
@@ -318,8 +312,7 @@ class PolicyAnswer:
     citations: tuple[dict, ...]
 
 
-_POLICY_TEXT_MARKERS = ("政策", "发货", "包邮", "价保", "价格保护", "退货",
-                        "保修", "礼品包装", "检索服务")
+_POLICY_TEXT_MARKERS = ("政策", "发货", "包邮", "价保", "价格保护", "礼品包装")
 
 _SCOPE_PATTERNS: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = (
     ("demo_shipping", (
@@ -406,23 +399,25 @@ def answer_policy_question(text: str, registry: PolicyRegistry | None,
         return _unavailable("政策和检索服务暂不可用。")
 
     qualified: dict[tuple[str, int], PolicyRecord] = {}
-    filtered = False
+    stale_candidate_seen = False
     for document in result.policy_documents:
         record = registry.lookup(document.knowledge_base_id, document.knowledge_id)
         if record is None:
-            filtered = True
+            stale_candidate_seen = True
             continue
         if record.scope_key != scope_key:
             continue
         if not record.active_at(now):
-            filtered = True
+            stale_candidate_seen = True
             continue
         qualified[(record.policy_id, record.version)] = record
     if len(qualified) > 1:
         return PolicyAnswer("conflict", "policy_conflict", "当前政策依据存在冲突，暂无法确认。", ())
     if not qualified:
-        if filtered:
+        if stale_candidate_seen:
             return _unavailable("相关依据已失效或待维护，暂无法确认。")
+        if active:
+            return _unavailable("当前登记依据未能通过检索确认，暂无法确认。")
         reply = "未检索到足够相关的政策依据。"
         if result.research_documents:
             reply += "仅找到标注为非商城政策的研究资料，不能作为商城政策依据。"

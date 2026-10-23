@@ -31,22 +31,14 @@ def main():
         DEMO_WEKNORA_JWT_SECRET="syntheticOnly12345678901234567890",
         DEMO_WEKNORA_CONFIG="/nonexistent/synthetic-config.yaml",
     )
-    command = ["docker", "compose", "--env-file", os.devnull,
-               "-f", str(directory / "compose.yaml")]
+    command = ["docker", "compose", "--env-file", os.devnull]
 
-    def configuration(profiles):
-        result = subprocess.run(command + profiles + ["config", "--format", "json"],
+    def configuration(profiles, files=("compose.yaml",)):
+        compose = command + [part for filename in files for part in ("-f", str(directory / filename))]
+        result = subprocess.run(compose + profiles + ["config", "--format", "json"],
                                 env=environment, capture_output=True, text=True, timeout=30)
         if result.returncode:
             raise RuntimeError("Synthetic Compose parsing failed; no resources started")
-        return json.loads(result.stdout)
-
-    def product_configuration():
-        product_command = ["docker", "compose", "--env-file", os.devnull,
-                           "-f", str(directory / "compose.products.yaml"), "config", "--format", "json"]
-        result = subprocess.run(product_command, env=environment, capture_output=True, text=True, timeout=30)
-        if result.returncode:
-            raise RuntimeError("Synthetic product Compose parsing failed; no resources started")
         return json.loads(result.stdout)
 
     assert not configuration([]).get("services")
@@ -76,7 +68,7 @@ def main():
     assert "shop_customer_service_demo" in settings["SHOP_DATABASE_URL"]
     assert "shop-api" not in configuration(["--profile", "pending-demo-gates"])["services"]
 
-    product_candidate = product_configuration()
+    product_candidate = configuration([], files=("compose.products.yaml",))
     assert product_candidate["name"] == "shop-customer-service-demo"
     product_services = product_candidate["services"]
     assert set(product_services) == {"shop-db", "shop-api", "shop-web"}

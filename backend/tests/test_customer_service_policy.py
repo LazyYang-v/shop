@@ -86,10 +86,10 @@ def active_shipping(content="虚构演示规则：演示商城订单在付款后
                   effective_to=None, canonical_content=content)
 
 
-def policy_index_document(knowledge_id="doc-demo-shipping-v1",
-                          text="演示商城订单在付款后 48 小时内发出。"):
+def policy_index_document(knowledge_id="doc-demo-shipping-v1", text="演示商城订单在付款后 48 小时内发出。",
+                          title="演示商城发货时限"):
     return {"knowledge_base_id": "synthetic-demo-kb", "knowledge_id": knowledge_id,
-            "title": "演示商城发货时限", "text": text, "source_type": "synthetic_mall_policy"}
+            "title": title, "text": text, "source_type": "synthetic_mall_policy"}
 
 
 def test_current_version_is_cited_with_source_version_and_effective_basis():
@@ -175,16 +175,22 @@ def test_ambiguous_policy_question_requests_clarification_and_ordinary_text_is_i
     assert answer_policy_question("今天天气怎么样？", registry, index, NOW) is None
 
 
-def test_conflicting_authoritative_registrations_stop_the_answer():
-    from shop_api.customer_service_policy import PolicyRegistry, answer_policy_question, load_policy_data
+def test_conflicting_authoritative_registrations_stop_the_answer(monkeypatch):
+    import shop_api.customer_service_policy as policy
+    from shop_api.customer_service_policy import answer_policy_question
 
-    _, index = load_policy_data(fixture())
+    # Conflict cannot arise from a loadable fixture: publication validation rejects
+    # it. Fault-inject the corrupt registry a live registry bug could produce.
+    monkeypatch.setattr(policy, "_validate_publication", lambda records: None)
     first = active_shipping()
     second = record(policy_id="00000000-0000-4000-8000-000000000103", version=1,
                     knowledge_id="doc-demo-shipping-conflict", source_ref="synthetic://policies/demo-shipping-conflict",
                     status="active", effective_from="2025-06-01T00:00:00+00:00", effective_to=None,
                     canonical_content="另一条相互冲突的虚构规则。")
-    corrupt = PolicyRegistry.from_registrations((first, second), publication_validated=False)
+    corrupt, index = policy.load_policy_data(fixture(policies=[first, second], policy_index=[
+        policy_index_document("doc-demo-shipping-v2", "演示商城订单在付款后 48 小时内发出。"),
+        policy_index_document("doc-demo-shipping-conflict", "另一条相互冲突的虚构发货规则。"),
+    ]))
 
     answer = answer_policy_question("演示商城多久发货？", corrupt, index, NOW)
 
@@ -192,6 +198,28 @@ def test_conflicting_authoritative_registrations_stop_the_answer():
     assert answer.status == "conflict" and answer.code == "policy_conflict"
     assert answer.citations == ()
     assert "冲突" in answer.reply
+
+
+def test_active_registration_missing_from_retrieval_is_unavailable_not_no_match():
+    from shop_api.customer_service_policy import answer_policy_question, load_policy_data
+
+    registry, index = load_policy_data(fixture(policies=[active_shipping()], policy_index=[
+        policy_index_document("doc-demo-shipping-v2", "演示商城订单处理说明。", title="订单处理说明")]))
+
+    answer = answer_policy_question("演示商城多久发货？", registry, index, NOW)
+
+    assert answer is not None
+    assert answer.status == "unavailable" and answer.code == "policy_unavailable"
+    assert "未能通过检索确认" in answer.reply
+
+
+def test_unsupported_policy_topics_are_not_treated_as_synthetic_policy():
+    from shop_api.customer_service_policy import answer_policy_question, load_policy_data
+
+    registry, index = load_policy_data(fixture())
+    assert answer_policy_question("演示商城退货可以吗？", registry, index, NOW) is None
+    assert answer_policy_question("演示商城保修多久？", registry, index, NOW) is None
+    assert answer_policy_question("检索服务可用吗？", registry, index, NOW) is None
 
 
 def test_index_failure_is_unavailable_not_no_match():
@@ -359,8 +387,9 @@ def test_policy_message_returns_citation_without_calling_a_model(policy_client):
                for path in client.app.state.customer_service_log_writer._directory.glob("*.jsonl"))
 
 
-def test_policy_message_keeps_no_match_conflict_and_unavailable_distinct(policy_client):
-    from shop_api.customer_service_policy import PolicyRegistry, load_policy_data
+def test_policy_message_keeps_no_match_conflict_and_unavailable_distinct(policy_client, monkeypatch):
+    import shop_api.customer_service_policy as policy
+    from shop_api.customer_service_policy import load_policy_data
     from shop_api.customer_service_policy import load_synthetic_policy_fixture
     import hashlib
     from pathlib import Path
@@ -370,28 +399,32 @@ def test_policy_message_keeps_no_match_conflict_and_unavailable_distinct(policy_
 
     no_match = _ask(client, created, "演示商城礼品包装政策是什么？")
     assert no_match.status_code == 200
-    assert no_match.json()["status"] == "no_match"
+    assert no_match.json()["status"] == "empty"
     assert no_match.json()["code"] == "policy_no_match"
     assert no_match.json()["data"]["citations"] == []
     assert "非商城政策" in no_match.json()["data"]["reply"]
 
-    filtered = _ask(client, created, "演示商城包邮门槛是多少？")
-    assert filtered.json()["status"] == "unavailable"
-    assert filtered.json()["code"] == "policy_unavailable"
+    stale = _ask(client, created, "演示商城包邮门槛是多少？")
+    assert stale.json()["status"] == "unavailable"
+    assert stale.json()["code"] == "policy_unavailable"
 
     path = Path(__file__).resolve().parents[2] / "deploy/customer-service-demo/policies.synthetic.v1.json"
     registry, index = load_synthetic_policy_fixture(str(path), hashlib.sha256(path.read_bytes()).hexdigest())
-    corrupt = PolicyRegistry.from_registrations([
+    monkeypatch.setattr(policy, "_validate_publication", lambda records: None)
+    corrupt, _ = load_policy_data(fixture(policies=[
         active_shipping(),
         record(policy_id="00000000-0000-4000-8000-000000000103", version=1,
                knowledge_id="doc-demo-shipping-conflict",
                source_ref="synthetic://policies/demo-shipping-conflict",
                status="active", effective_from="2025-06-01T00:00:00+00:00", effective_to=None,
                canonical_content="另一条相互冲突的虚构规则。"),
-    ], publication_validated=False)
+    ], policy_index=[
+        policy_index_document("doc-demo-shipping-v2", "演示商城订单在付款后 48 小时内发出。"),
+        policy_index_document("doc-demo-shipping-conflict", "另一条相互冲突的虚构发货规则。"),
+    ]))
     client.app.state.customer_service_policy_registry = corrupt
     conflict = _ask(client, created, "演示商城多久发货？")
-    assert conflict.json()["status"] == "conflict"
+    assert conflict.json()["status"] == "unavailable"
     assert conflict.json()["code"] == "policy_conflict"
     assert conflict.json()["data"]["citations"] == []
 

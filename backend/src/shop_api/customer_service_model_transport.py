@@ -93,7 +93,7 @@ class CompletionTransport:
         self._budget.settle_confirmed_end(reservation.session_id, reservation.id,
                                          completion=Completion.SUCCESS, usage=counts)
         # Truncated/filtered/tool output is not a verified product answer.
-        if (choices[0]['finish_reason'] != 'stop'
+        if (choices[0]['finish_reason'] not in {'stop', 'tool_calls'}
                 or type(counts.input_tokens) is not int or type(counts.output_tokens) is not int
                 or counts.input_tokens < 0 or counts.input_tokens > reservation.reserved_tokens - 1500
                 or counts.output_tokens < 0 or counts.output_tokens > 1500):

@@ -14,10 +14,10 @@ class ModelTurn:
     This primitive grants no permission to send and has no retry loop.
     """
 
-    def __init__(self, budget: ModelBudget, session_id):
+    def __init__(self, budget: ModelBudget, session_id, *, deadline=None):
         self._budget = budget
         self._session_id = session_id
-        self._deadline = time.monotonic() + 45.0
+        self._deadline = deadline if deadline is not None else time.monotonic() + 45.0
         self._attempts = 0
 
     def prepare(self, facts):
@@ -27,7 +27,7 @@ class ModelTurn:
         admission score. Real transport authorization remains a separate gate.
         """
         from shop_api.customer_service_model import prepare_model_request, measured_input_tokens
-        request = prepare_model_request(facts)
+        request = facts if isinstance(facts, dict) else prepare_model_request(facts)
         count = measured_input_tokens(request)
         reservation, timeout = self.reserve(measured_input_tokens=count, metering_mode='estimated')
         return request, reservation, timeout

@@ -10,6 +10,10 @@
 
 此项仅覆盖旧“客服仅演示买家”限制；政策归#4且明确不可用，模型预算、订单及确认凭据契约不变。仅隔离本地测试、虚构数据，不部署、不改开发/演示库、不新增收费调用。B后续实现自由文本、实际MCP协议及合成模型循环；C需用户查看A/B证据后另行明确确认，最多20元及累计200请求，任一达到停止，当前未执行。验收入口以[运行契约分阶段修订](customer-service-runtime-contract.md#2026-10-23-分阶段验收修订phase-a-匿名商品只读)和[#3验收单](customer-service-issue-3-acceptance.md)为准。
 
+## Phase B 最新窄范围覆盖（2026-10-23）
+
+B仅本地虚构fixture、整句中文受控语法及合成模型。整句识别/澄清、ASGI HTTP MCP2025-03-26、UUID业务Schema与product_N模型门面的分层、共享账本和durable claim选择以[运行契约B节](customer-service-runtime-contract.md#phase-b-本地合成实施2026-10-23)为当前规范。HTTP增加200/status=needs_clarification、data={reply,cards:[],citations:[]}；已claim未知结果重放425/processing；模型失败已有核验事实200/partial，无事实503/dependency_unavailable。政策仍不可用。模型facade list_products仅{}，get_product仅product_ref枚举；下文业务MCP UUID schema不改，订单与确认不改。生产真实provider无条件关闭，C另行授权。
+
 ## 最新授权与验收修订（2026-10-22）
 
 用户明确同意准备专用测试端点的令牌撤销验证；轮换由用户操作，新值仅填写本地配置，旧值不另存文件。DeepSeek验证金额上限为3元；具体请求方案及当前价格核对后确认执行，不授权无人值守运行或后续产品实施。用户接受商城撤回后立即禁止引用旧政策，WeKnora索引异步删除并验证清理，替代“失效瞬间平台原始检索零旧命中”的强要求。下文历史未授权及零窗口阻塞描述由本修订覆盖；批准不表示验证完成。

@@ -32,14 +32,14 @@ class GetProductArguments(BaseModel):
 
 
 class ProductTools:
-    def __init__(self, session: Session, fixtures: Mapping[str, ProductFixture], request_id: str, clock: Callable[[], datetime]):
+    def __init__(self, session: Session, fixtures: Mapping[str, ProductFixture], request_id: str, clock: Callable[[], datetime], *, deadline=None):
         self._session = session
         self._fixtures = fixtures
         self._request_id = request_id
         self._clock = clock
         self._calls = 0
         self._seen: set[tuple[str, str]] = set()
-        self._deadline = QueryDeadline(45.0)
+        self._deadline = deadline or QueryDeadline(45.0)
 
     def call(self, name: Literal['list_products', 'get_product'], arguments: dict) -> dict:
         if name not in {'list_products', 'get_product'}:

@@ -48,7 +48,7 @@ from shop_api.identity import (
 )
 
 
-def create_app(database_url: str | None = None) -> FastAPI:
+def create_app(database_url: str | None = None, *, synthetic_product_exchange=None) -> FastAPI:
     resolved_database_url = database_url or os.getenv("SHOP_DATABASE_URL")
     if not resolved_database_url:
         raise RuntimeError("SHOP_DATABASE_URL must be configured")
@@ -78,6 +78,8 @@ def create_app(database_url: str | None = None) -> FastAPI:
                 await task
             with suppress(asyncio.CancelledError):
                 await customer_service_task
+            if application.state.customer_service_synthetic_transport is not None:
+                await asyncio.to_thread(application.state.customer_service_synthetic_transport.close)
             factory.kw["bind"].dispose()
 
     app = FastAPI(title="Shop Portfolio API", version="0.1.0", lifespan=lifespan)
@@ -95,6 +97,14 @@ def create_app(database_url: str | None = None) -> FastAPI:
     app.state.customer_service_log_writer = None
     app.state.customer_service_fixtures = {}
     app.state.customer_service_buyer_ids = set()
+    # Trusted server constructor seam only. No env/browser/provider activation.
+    app.state.customer_service_synthetic_transport = None
+    if synthetic_product_exchange is not None:
+        from shop_api.customer_service_model_budget import ModelBudget
+        from shop_api.customer_service_model_transport import CompletionTransport
+        app.state.customer_service_synthetic_transport = CompletionTransport(
+            ModelBudget(factory, clock=lambda: app.state.clock(), product_only=True),
+            exchange=synthetic_product_exchange)
 
     async def customer_service_maintenance(application: FastAPI) -> None:
         maintenance = CustomerServiceMaintenance(
@@ -125,6 +135,8 @@ def create_app(database_url: str | None = None) -> FastAPI:
             writer.prune(application.state.clock())
             application.state.customer_service_fixtures = fixtures
             application.state.customer_service_buyer_ids = buyer_ids
+            if application.state.customer_service_synthetic_transport is not None:
+                application.state.customer_service_synthetic_transport._budget._approved_buyer_ids = frozenset(buyer_ids)
             application.state.customer_service_log_writer = writer
             application.state.customer_service_enabled = True
         except CustomerServiceUnavailable:

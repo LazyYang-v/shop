@@ -10,6 +10,27 @@
 
 因此建议交付描述为“受控演示商品查询路径通过验收”，不建议无条件声称完整访客客服或全部ADR实现完成。是否据此关闭原票，应在交付时保留上述范围差异；本次不执行关闭。
 
+## Phase B 最新证据与范围（覆盖下文旧阶段结论，2026-10-23）
+
+B现已实现本地整句商品语法、实际序列化MCP和完整合成模型工具循环；下文“未实现自由文本/MCP/循环”保留为历史A阶段观察。限制是整句受控语法，不提供任意语言/模糊名称理解，未知/歧义/混入私人文本本地澄清，0模型调用。仅本地ASGI HTTP MCP2025-03-26，无独立MCP进程、公网服务或真实模型业务验证。生产真实provider始终关闭；C未执行，真实调用累计0、金额0。
+
+A后续独立修复f13a47e已合并：同页所有CSRF bootstrap与POST/续期串行，避免GET轮换使并发咨询令牌失效。真实Chrome受控交错先RED（rotation3而非2）后GREEN，完整浏览器13/13；不改服务端身份契约，不自动重放POST。
+
+| B要求 | 实际证据 | 限制 |
+|---|---|---|
+| 匿名桌面/移动整句列表、名称价格/库存及复合问题 | test_whole_sentence_product_questions_and_local_clarification；test_customer_service_browser_queries_real_isolated_catalog，真实Chrome→messages→ASGI MCP→真实shop_test→合成exchange+真实ledger，桌面/移动各2响应，共4合成响应 | 中文完整名称及受控句式；非开放NLU |
+| 实际MCP具名工具与严格边界 | 初始化、通知202、list仅2工具、call真实DB；额外SQL/未知工具/方法/version/bool ID拒绝API测试；result严格envelope/data验证、isError检查 | in-process HTTP无socket/外部端点；不宣称WeKnora商品服务 |
+| 完整工具循环及隐私 | tool_calls→MCP→sanitized tool result→final JSON；重放不再执行；恶意ID/alias/schema/admin拒绝；原文/name/UUID/page/cookie/私人哨兵不进入exchange及安全日志 | call ID只接受call_1..4；模型list仅{}，当前轮仅选定商品alias |
+| 期限/尝试/预算 | 原transport/model_limits/model_budget真实DB回归；匿名product_only真实共享账本、30分钟绝对期、会话/部署quota；4次/45秒、2商品尝试含重试；2 worker/2槽、90秒TTL、usage latch/迟到不退款 | ASGI受控DB读取靠statement_timeout；不提供任意同步Python函数强制取消，不证明远端停止 |
+| 消息生命周期 | 专用session advisory连接跨编排，持久claim先提交，短事务避免auth FOR UPDATE与budget FOR SHARE自锁；交付重新校验，未知claim重放425 | 崩溃未知结果保守保留，用户可发新message_id，无自动恢复重执行 |
+| 降级/政策 | 模型后续失败保留已核验partial；无事实503；政策/检索明确不可用，不注册政策或订单工具 | 实际模型提供方超时/网络故障未调用验证；合成及既有transport超时测试覆盖本地边界 |
+
+本轮最终执行：`SHOP_RUN_BROWSER_TESTS=1 uv run --project backend python -I /tmp/shop-phase-a-tests.py backend/tests -q`：258 passed、2 warnings、54.87s。helper仅子进程授权127.0.0.1:55445/shop_test与reset；全套含真实浏览器。此前目标套83 passed，扩展咨询32 passed；本轮先RED后GREEN证据包括整句API、MCP模块缺失及复合问题未触发exchange。不重复计数为新增验收量。
+
+前端模拟API套：`npx playwright test e2e/customer-service.spec.ts --reporter=line`：最终13 passed（13.8s）；`npm run build`通过，`git diff --check`通过。真实截图`/tmp/shop-phase-b-desktop.png`、`/tmp/shop-phase-b-mobile.png`含虚构名称/129.00/24和请求标识/时间，截图在私人哨兵输入前保存。安全日志集成断言仅request_id/tool/error/duration_ms/count/recorded_at字段，无原文、身份、密码或测试秘密。
+
+全套首次256 passed/1 failed/1 teardown error，已修复合成测试close接口及跨集成账本保留计数假设后得到上述最终258通过；未隐藏失败或声称外部/付费验证。无开发/演示库操作、无部署、无外部Issue写入。尚未执行C官方价格复核/请求金额持久化预留；必须用户看A/B证据后明确确认，≤200累计请求且≤20元，任一达到停止。
+
 ## 五条验收要求与证据
 
 | 原始要求 | 核对结果 | 实现及验证证据 |

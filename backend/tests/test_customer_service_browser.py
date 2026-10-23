@@ -44,7 +44,19 @@ def test_customer_service_browser_queries_real_isolated_catalog(client, tmp_path
     monkeypatch.setenv('SHOP_CUSTOMER_SERVICE_LOG_DIRECTORY', str(logs))
     monkeypatch.setenv('SHOP_CUSTOMER_SERVICE_BUYER_IDS', ','.join(buyer_ids))
     url = client.app.state.session_factory.kw['bind'].url.render_as_string(hide_password=False)
-    app = create_app(database_url=url)
+    from sqlalchemy import text
+    with client.app.state.session_factory() as db:
+        previous_reservations = set(db.scalars(text('SELECT id FROM customer_service_model_reservations')))
+    exchanges = []
+    def synthetic_exchange(payload, token, timeout):
+        exchanges.append(json.dumps(payload, ensure_ascii=False))
+        tool_reply = payload['messages'][-1]['role'] == 'tool'
+        message = ({'role': 'assistant', 'content': '{"intent":"price_stock","product_refs":["product_1"]}'} if tool_reply
+                   else {'role': 'assistant', 'content': None, 'tool_calls': [{'id': 'call_1', 'type': 'function',
+                         'function': {'name': 'get_product', 'arguments': '{"product_ref":"product_1"}'}}]})
+        return {'object': 'chat.completion', 'choices': [{'finish_reason': 'stop' if tool_reply else 'tool_calls', 'message': message}],
+                'usage': {'prompt_tokens': 150, 'completion_tokens': 30}}
+    app = create_app(database_url=url, synthetic_product_exchange=synthetic_exchange)
     from datetime import timedelta
     from fastapi import Header, HTTPException
     test_clock_key = secrets.token_urlsafe(32)
@@ -83,6 +95,15 @@ def test_customer_service_browser_queries_real_isolated_catalog(client, tmp_path
             server.should_exit = True
             thread.join(timeout=10)
             assert not thread.is_alive()
+    app.state.customer_service_synthetic_transport.close()
+    with app.state.session_factory.begin() as db:
+        created_reservations = set(db.scalars(text('SELECT id FROM customer_service_model_reservations'))) - previous_reservations
+        for reservation_id in created_reservations:
+            db.execute(text('DELETE FROM customer_service_model_reservations WHERE id=:id'), {'id': reservation_id})
+    assert len(exchanges) == 4
+    for forbidden in ['PRIVATE_SENTINEL', '春日', '00000000-0000-0000-0000-000000000001', password, test_clock_key, *emails]:
+        assert all(forbidden not in exchange for exchange in exchanges)
+        assert all(forbidden not in path.read_text() for path in logs.glob('*.jsonl'))
     records = [json.loads(line) for path in logs.glob('customer-service-*.jsonl') for line in path.read_text().splitlines()]
     assert {record['tool'] for record in records} == {'list_products', 'get_product'}
     assert all(set(record) == {'request_id', 'tool', 'error', 'duration_ms', 'count', 'recorded_at'} for record in records)

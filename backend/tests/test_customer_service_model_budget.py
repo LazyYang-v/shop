@@ -62,6 +62,28 @@ def set_day(factory, scope, day, tokens):
             {"scope": scope, "day": day, "tokens": tokens})
 
 
+def test_anonymous_product_budget_is_shared_and_checks_absolute_expiry(budget_context):
+    factory, ids, clock = budget_context
+    with factory.begin() as db:
+        db.execute(text("UPDATE auth_sessions SET kind='anonymous', user_id=NULL, expires_at=:expiry WHERE id=:id"),
+                   {'id': ids[0], 'expiry': clock[0] + timedelta(hours=1)})
+    budget = ModelBudget(factory, clock=lambda: clock[0], product_only=True)
+    first = budget.reserve(ids[0], input_tokens=100, metering_mode='estimated')
+    assert first.reserved_tokens == 13500
+    assert ledger(factory, 'deployment', clock[0].date()) >= 13500
+    budget.settle_confirmed_end(ids[0], first.id, completion=Completion.SUCCESS, usage=ProviderUsage(100, 20))
+    assert ledger(factory, str(ids[0]), clock[0].date()) == 120
+    with pytest.raises(ModelBudgetDenied):
+        ModelBudget(factory, clock=lambda: clock[0]).reserve(ids[0], input_tokens=100)
+    clock[0] += timedelta(minutes=30)
+    with pytest.raises(ModelBudgetDenied):
+        budget.reserve(ids[0], input_tokens=100)
+    # Another active session cannot reset the deployment counter.
+    set_day(factory, 'deployment', clock[0].date(), 499999)
+    with pytest.raises(ModelBudgetDenied):
+        budget.reserve(ids[1], input_tokens=100)
+
+
 def test_reserve_settle_and_idempotence_across_instances(budget_context):
     factory, ids, clock = budget_context
     budget = ModelBudget(factory, clock=lambda: clock[0])
@@ -286,8 +308,13 @@ def test_retention_removes_only_terminal_records_and_preserves_outstanding_accou
     budget.settle_confirmed_end(ids[0], ended.id, completion=Completion.FAILURE)
     outstanding = budget.reserve(ids[1], input_tokens=100)
     budget.mark_caller_timeout(ids[1], outstanding.id)
+    # Other integration tests may retain independently settled entries. Observe
+    # their expiry separately; this test still requires its own record to expire.
+    with factory() as db:
+        preexisting_expired = db.scalar(text('SELECT count(*) FROM customer_service_model_reservations WHERE ended_at IS NOT NULL AND ended_at<=:cutoff AND id<>:id'),
+                                       {'cutoff': clock[0] + timedelta(days=1), 'id': ended.id})
     clock[0] += timedelta(days=31)
-    assert budget.prune_ended() == 1
+    assert budget.prune_ended() == 1 + preexisting_expired
     assert budget.prune_ended() == 0
     with factory() as db:
         assert db.scalar(text('SELECT count(*) FROM customer_service_model_reservations WHERE id=:id'), {'id': ended.id}) == 0

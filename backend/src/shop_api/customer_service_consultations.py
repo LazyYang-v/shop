@@ -1,4 +1,4 @@
-"""Session-bound, deterministic product consultations; no model/provider path."""
+"""Session-bound fictional product consultations; real provider remains closed."""
 
 import hashlib
 import logging
@@ -16,7 +16,7 @@ from sqlalchemy import DateTime, ForeignKey, LargeBinary, Uuid, delete, select, 
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from shop_api.customer_service import CustomerServiceUnavailable, QueryDeadline, acquire_query_turn
+from shop_api.customer_service import CustomerServiceUnavailable, QueryDeadline
 from shop_api.customer_service_products import ProductTools
 from shop_api.database import Base
 from shop_api.identity import AuthSession, require_csrf
@@ -229,12 +229,25 @@ def build_consultation_router(session_dependency, current_session):
     @router.post("/messages")
     def message(payload: MessageInput, request: Request, record: AuthSession = Depends(authorized),
                 db: Session = Depends(session_dependency)):
+        lock_key = int.from_bytes(hashlib.sha256(f"customer-service-message:{record.id}".encode()).digest()[:8], "big", signed=True)
+        # A dedicated connection owns a session lock across short transactions.
+        with request.app.state.session_factory.kw['bind'].connect() as owner:
+            locked = owner.scalar(text('SELECT pg_try_advisory_lock(:key)'), {'key': lock_key})
+            owner.commit()
+            if not locked:
+                raise ConsultationError(425, 'busy', '已有咨询消息正在处理')
+            try:
+                return run_message(payload, request, record, db)
+            finally:
+                owner.execute(text('SELECT pg_advisory_unlock(:key)'), {'key': lock_key})
+                owner.commit()
+
+    def run_message(payload, request, record, db):
+        import time
+        deadline = time.monotonic() + 45.0
         now = request.app.state.clock()
         if payload.text is not None and len(payload.text) > 2000:
             raise ConsultationError(422, "message_too_long", "消息过长")
-        # No waiting queue behind an in-flight message; lock spans query + dedupe commit.
-        if not acquire_query_turn(db, record.id):
-            raise ConsultationError(425, "busy", "已有咨询消息正在处理")
         _lock_session(db, record, now)
         page, consultation = _page(db, record, payload.page_instance_id, now)
         if str(consultation.id) != payload.consultation_id:
@@ -245,11 +258,15 @@ def build_consultation_router(session_dependency, current_session):
         if existing is not None:
             if not secrets.compare_digest(existing.body_hash, body_hash):
                 raise ConsultationError(409, "message_conflict", "消息标识已用于其他内容")
+            if existing.response.get('code') == 'processing':
+                raise ConsultationError(425, 'processing', '已有请求结果未能确认')
             page.last_used_at = now
             db.commit()
             return existing.response
         if payload.selected_order_id is not None or payload.text is None:
             raise ConsultationError(422, "invalid_input", "请选择受支持的商品查询")
+        require_query_rate_limits(request)
+        intent = 'detail'
         args = {}
         name = "list_products"
         page_match = re.fullmatch(r"查看演示商品第([1-9][0-9]?|100)页", payload.text)
@@ -257,23 +274,57 @@ def build_consultation_router(session_dependency, current_session):
             args = {"page": int(page_match.group(1))}
         elif payload.text != LIST_PRODUCTS_TEXT:
             product_id = payload.text.removeprefix(PRODUCT_SELECTION_PREFIX)
-            if not payload.text.startswith(PRODUCT_SELECTION_PREFIX) or product_id not in request.app.state.customer_service_fixtures:
-                raise ConsultationError(422, "invalid_input", "请选择受支持的商品查询")
-            name, args = "get_product", {"product_id": product_id}
-        require_query_rate_limits(request)
-        result = ProductTools(db, request.app.state.customer_service_fixtures,
-                              request.state.customer_service_request_id, request.app.state.clock).call(name, args)
+            if payload.text.startswith(PRODUCT_SELECTION_PREFIX):
+                if product_id not in request.app.state.customer_service_fixtures:
+                    raise ConsultationError(422, "invalid_input", "请选择受支持的商品查询")
+                name, args = "get_product", {"product_id": product_id}
+            else:
+                if payload.text.startswith('查看演示商品第'):
+                    raise ConsultationError(422, 'invalid_input', '请选择受支持的商品查询')
+                from shop_api.customer_service_language import understand
+                intent, name, args = understand(payload.text, request.app.state.customer_service_fixtures)
+                if name is None:
+                    return _envelope(request, "needs_clarification", {"reply": "请提供完整演示商品名称，并询问价格或库存；政策和检索服务暂不可用。", "cards": [], "citations": []})
+        # Commit a durable unknown-result claim before any orchestration. Crash replay
+        # returns this claim and can never silently execute the turn again.
+        claim = _envelope(request, 'unavailable', code='processing', message='已有请求结果未能确认')
+        db.add(ConsultationMessage(consultation_id=consultation.id, page_id=page.id,
+                                  client_message_id=UUID(payload.client_message_id), body_hash=body_hash, response=claim))
+        db.commit()
+        from shop_api.customer_service_product_mcp import ProductMCP
+        query_deadline = QueryDeadline(max(0, deadline - time.monotonic()))
+        tools = ProductTools(db, request.app.state.customer_service_fixtures,
+                             request.state.customer_service_request_id, request.app.state.clock, deadline=query_deadline)
+        mcp = ProductMCP(tools)
+        try:
+            mcp.initialize()
+            mcp.tools()
+            transport = getattr(request.app.state, 'customer_service_synthetic_transport', None)
+            if intent == 'price_stock' and transport is not None:
+                from shop_api.customer_service_model_loop import run_product_loop
+                result = run_product_loop(request, record.id, deadline, mcp, args['product_id'], transport)
+            else:
+                result = mcp.call(name, args)
+        finally:
+            mcp.close()
+        db.commit()
+        # Delivery revalidates auth/page after the independent budget transactions.
+        now = request.app.state.clock()
+        _lock_session(db, record, now)
+        require_product_reader(request, record, db)
+        page, consultation = _page(db, record, payload.page_instance_id, now)
+        query_deadline.check()
+        degraded = result.pop('model_degraded', False)
         products = result["data"]["items"] if name == "list_products" else [result["data"]]
         cards = [{"type": "product", "product": product,
                   "selection_text": PRODUCT_SELECTION_PREFIX + product["id"]} for product in products]
         if name == "list_products" and result["data"]["has_more"]:
             cards.append({"type": "product_page", "selection_text": f"查看演示商品第{result['data']['page'] + 1}页"})
-        response = _envelope(request, result["status"], {"reply": "已查询演示商品信息" if products else "未找到可访问的记录",
+        response = _envelope(request, 'partial' if degraded else result["status"], {"reply": "模型服务暂不可用，以下为已核验商品信息" if degraded else "已查询演示商品信息" if products else "未找到可访问的记录",
                                                           "cards": cards, "citations": []})
         # Log failure rolls back result persistence; there are no business writes here.
         request.app.state.customer_service_log_writer.write(request.state.customer_service_request_id, name, "", 0, len(products), now)
-        db.add(ConsultationMessage(consultation_id=consultation.id, page_id=page.id,
-                                   client_message_id=UUID(payload.client_message_id), body_hash=body_hash, response=response))
+        db.get(ConsultationMessage, key).response = response
         page.last_used_at = consultation.last_used_at = now
         db.commit()
         return response

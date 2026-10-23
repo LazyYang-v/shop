@@ -82,9 +82,12 @@ class ModelBudget:
     """
 
     def __init__(self, session_factory: sessionmaker[Session], *,
-                 clock: Callable[[], datetime] | None = None):
+                 clock: Callable[[], datetime] | None = None,
+                 product_only: bool = False, approved_buyer_ids=()):
         self._factory = session_factory
         self._clock = clock
+        self._product_only = product_only
+        self._approved_buyer_ids = frozenset(approved_buyer_ids)
 
     def _lock(self, db: Session) -> bool:
         row = db.execute(text("SELECT metering_blocked FROM customer_service_model_guard WHERE id=1 FOR UPDATE")).one_or_none()
@@ -139,10 +142,18 @@ class ModelBudget:
                 now = self._now(db)
                 self._reap_expired(db, now)
                 day = now.date()
-                valid = db.execute(text("""SELECT s.id FROM auth_sessions s JOIN users u ON u.id=s.user_id
-                    WHERE s.id=:id AND s.kind='authenticated' AND s.revoked_at IS NULL
-                    AND s.expires_at>:now AND u.is_active AND u.role='buyer'
-                    FOR SHARE OF s, u"""), {"id": session_id, "now": now}).one_or_none()
+                if self._product_only:
+                    valid = db.execute(text("""SELECT s.id FROM auth_sessions s
+                        WHERE s.id=:id AND s.revoked_at IS NULL AND s.expires_at>:now
+                        AND ((s.kind='anonymous' AND s.user_id IS NULL AND s.created_at + interval '30 minutes'>:now)
+                        OR (s.kind='authenticated' AND s.user_id=ANY(:buyers) AND EXISTS
+                            (SELECT 1 FROM users u WHERE u.id=s.user_id AND u.is_active AND u.role='buyer')))
+                        FOR SHARE OF s"""), {"id": session_id, "now": now, "buyers": list(self._approved_buyer_ids)}).one_or_none()
+                else:
+                    valid = db.execute(text("""SELECT s.id FROM auth_sessions s JOIN users u ON u.id=s.user_id
+                        WHERE s.id=:id AND s.kind='authenticated' AND s.revoked_at IS NULL
+                        AND s.expires_at>:now AND u.is_active AND u.role='buyer'
+                        FOR SHARE OF s, u"""), {"id": session_id, "now": now}).one_or_none()
                 if valid is None:
                     raise ModelBudgetDenied("Active buyer session required")
                 outstanding = db.scalar(text("SELECT count(*) FROM customer_service_model_reservations WHERE ended_at IS NULL"))

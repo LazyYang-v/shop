@@ -91,7 +91,7 @@
       <div class="messages" id="messages" role="log" aria-label="客服聊天记录" aria-live="polite">
         <button class="history" type="button">点击查看历史咨询记录</button>
         <div class="message"><span class="avatar" aria-hidden="true">👩🏻‍💼</span><div class="bubble">亲，我是智能小蜜，很高兴为您服务！</div></div>
-        <div class="message"><span class="avatar" aria-hidden="true">👩🏻‍💼</span><div class="bubble">访客可匿名查询虚构演示商品。请点击“查看演示商品”，或开始商品咨询后选择商品查询价格和库存。匿名会话自建立起30分钟有效；自由文本尚未开放，政策服务暂不可用。</div></div>
+        <div class="message"><span class="avatar" aria-hidden="true">👩🏻‍💼</span><div class="bubble">访客可匿名查询虚构演示商品。请点击“查看演示商品”，或开始商品咨询后选择商品查询价格和库存。匿名会话自建立起30分钟有效。可问“有哪些商品？”或完整商品名称加“多少钱”“有货吗”“价格和库存”；其他问题会请您澄清。政策和检索服务暂不可用。</div></div>
         <div class="quick-questions" aria-label="热门咨询">
           <button class="quick-question" id="start-consultation" type="button">开始商品咨询<span class="chevron" aria-hidden="true"></span></button>
           <button class="quick-question" id="list-products" type="button">查看演示商品<span class="chevron" aria-hidden="true"></span></button>
@@ -139,7 +139,7 @@
       appendMessage(text.trim(), true);
       input.value = '';
       sendButton.disabled = true;
-      appendMessage('自由文本尚未开放，政策服务暂不可用。请点击“查看演示商品”或“开始商品咨询”查询商品。');
+      consultProducts(text.trim());
     }
     input.addEventListener('input', () => { sendButton.disabled = !input.value.trim(); });
     document.getElementById('chat-form').addEventListener('submit', event => {
@@ -211,7 +211,7 @@
       const response = await fetch(`/api/customer-service/${path}`, {
         method: 'POST', credentials: 'same-origin', cache: 'no-store',
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf.csrf_token },
-        body: JSON.stringify(payload), signal: AbortSignal.timeout(10000),
+        body: JSON.stringify(payload), signal: AbortSignal.timeout(path === 'messages' ? 46000 : 10000),
       });
       const result = await response.json();
       if (!response.ok) {

@@ -17,6 +17,15 @@ def require_demo_buyer(request: Request, record, db):
     return buyer
 
 
+def require_product_reader(request: Request, record, db):
+    """Anonymous admission applies only to deterministic fixture product reads."""
+    if not request.app.state.customer_service_enabled:
+        raise HTTPException(status_code=503, detail="客服暂不可用")
+    if record.kind == "anonymous" and record.user_id is None:
+        return None
+    return require_demo_buyer(request, record, db)
+
+
 def require_query_rate_limits(request: Request) -> None:
     if request.client is None:
         raise HTTPException(status_code=503, detail="客服查询保护暂不可用")

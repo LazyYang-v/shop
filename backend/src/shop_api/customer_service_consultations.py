@@ -20,7 +20,7 @@ from shop_api.customer_service import CustomerServiceUnavailable, QueryDeadline,
 from shop_api.customer_service_products import ProductTools
 from shop_api.database import Base
 from shop_api.identity import AuthSession, require_csrf
-from shop_api.customer_service_admission import require_demo_buyer, require_query_rate_limits
+from shop_api.customer_service_admission import require_product_reader, require_query_rate_limits
 
 LIST_PRODUCTS_TEXT = "查看演示商品"
 PRODUCT_SELECTION_PREFIX = "查看演示商品："
@@ -168,7 +168,7 @@ def build_consultation_router(session_dependency, current_session):
             require_csrf(request, record, csrf_token, origin)
         except HTTPException:
             raise ConsultationError(403, "forbidden", "请求校验失败") from None
-        require_demo_buyer(request, record, db)
+        require_product_reader(request, record, db)
         if request.query_params:
             raise ConsultationError(422, "invalid_input", "请求参数无效")
         return record

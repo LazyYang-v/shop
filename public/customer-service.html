@@ -91,7 +91,7 @@
       <div class="messages" id="messages" role="log" aria-label="客服聊天记录" aria-live="polite">
         <button class="history" type="button">点击查看历史咨询记录</button>
         <div class="message"><span class="avatar" aria-hidden="true">👩🏻‍💼</span><div class="bubble">亲，我是智能小蜜，很高兴为您服务！</div></div>
-        <div class="message"><span class="avatar" aria-hidden="true">👩🏻‍💼</span><div class="bubble">仅供专用演示买家查询虚构商品。请点击“查看演示商品”，再选择商品查询价格和库存；自由文本及政策服务尚未开放。</div></div>
+        <div class="message"><span class="avatar" aria-hidden="true">👩🏻‍💼</span><div class="bubble">访客可匿名查询虚构演示商品。请点击“查看演示商品”，或开始商品咨询后选择商品查询价格和库存。匿名会话自建立起30分钟有效；自由文本尚未开放，政策服务暂不可用。</div></div>
         <div class="quick-questions" aria-label="热门咨询">
           <button class="quick-question" id="start-consultation" type="button">开始商品咨询<span class="chevron" aria-hidden="true"></span></button>
           <button class="quick-question" id="list-products" type="button">查看演示商品<span class="chevron" aria-hidden="true"></span></button>
@@ -139,7 +139,7 @@
       appendMessage(text.trim(), true);
       input.value = '';
       sendButton.disabled = true;
-      appendMessage('亲，商品客服功能尚未开放。您可以先在商城商品目录中查询商品信息。');
+      appendMessage('自由文本尚未开放，政策服务暂不可用。请点击“查看演示商品”或“开始商品咨询”查询商品。');
     }
     input.addEventListener('input', () => { sendButton.disabled = !input.value.trim(); });
     document.getElementById('chat-form').addEventListener('submit', event => {
@@ -206,7 +206,7 @@
       if (!response.ok) {
         if ([401, 403, 409, 410].includes(response.status)) invalidateConsultation();
         appendMessage(response.status === 410 ? '咨询页面已过期，请重新开始商品咨询。'
-          : response.status === 401 ? '请先登录专用演示买家账号。'
+          : response.status === 401 ? '会话已失效，请重新开始商品咨询。'
           : response.status === 409 ? '咨询状态已变化，请重新开始。'
           : response.status === 429 ? '咨询过于频繁，请稍后重试。'
           : '商品咨询暂不可用，请稍后重试。');
@@ -280,17 +280,18 @@
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 8000);
       try {
+        const sessionResponse = await fetch('/api/auth/csrf', { credentials: 'same-origin', cache: 'no-store', signal: controller.signal });
+        if (!sessionResponse.ok) throw new Error('Session unavailable');
         const path = productId
           ? `/api/customer-service/products/${encodeURIComponent(productId)}`
           : `/api/customer-service/products?page=${page}&page_size=10`;
         const response = await fetch(path, { credentials: 'same-origin', cache: 'no-store', signal: controller.signal });
         if (!response.ok) {
-          if (response.status === 401) appendMessage('请先登录专用演示买家账号，再查询商品。');
+          if (response.status === 401) appendMessage('会话已失效，请重新查询演示商品。');
           else if (response.status === 403) {
             const error = await response.json().catch(() => null);
-            appendMessage(productId && error?.code === 'resource_unavailable'
-              ? '未找到可访问的演示商品，请重新查看商品列表或确认演示账号。'
-              : '当前账号无法访问演示商品客服。');
+            if (productId && error?.code === 'resource_unavailable') appendMessage('未找到可访问的演示商品，请重新查看商品列表。');
+            else appendMessage('当前账号无法访问演示商品客服。');
           }
           else if (response.status === 429) {
             const delay = Number(response.headers.get('Retry-After'));

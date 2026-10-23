@@ -21,7 +21,7 @@ from shop_api.cart import AddCartItem, CartItem, CartResponse, UpdateCartItem, a
 from shop_api.database import make_session_factory
 from shop_api.customer_service import CustomerServiceUnavailable, SafeLogWriter, SharedLimiter, acquire_query_turn, check_fixture
 from shop_api.customer_service_maintenance import CustomerServiceMaintenance
-from shop_api.customer_service_admission import require_demo_buyer, require_query_rate_limits
+from shop_api.customer_service_admission import require_product_reader, require_query_rate_limits
 from shop_api.customer_service_products import ProductTools
 from shop_api.customer_service_consultations import build_consultation_router
 from shop_api.expiry import expire_orders, expiry_loop
@@ -204,7 +204,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
         session: Session = Depends(session_dependency),
     ) -> dict[str, object]:
         response.headers["Cache-Control"] = "no-store"
-        require_demo_buyer(request, record, buyer_session)
+        require_product_reader(request, record, buyer_session)
         if set(request.query_params) - {"q", "category", "page", "page_size"}:
             raise HTTPException(status_code=422, detail="查询参数无效")
         request_id = request.state.customer_service_request_id
@@ -233,7 +233,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
         session: Session = Depends(session_dependency),
     ) -> dict[str, object]:
         response.headers["Cache-Control"] = "no-store"
-        require_demo_buyer(request, record, buyer_session)
+        require_product_reader(request, record, buyer_session)
         if request.query_params:
             raise HTTPException(status_code=422, detail="查询参数无效")
         request_id = request.state.customer_service_request_id

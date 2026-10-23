@@ -45,6 +45,21 @@ def test_customer_service_browser_queries_real_isolated_catalog(client, tmp_path
     monkeypatch.setenv('SHOP_CUSTOMER_SERVICE_BUYER_IDS', ','.join(buyer_ids))
     url = client.app.state.session_factory.kw['bind'].url.render_as_string(hide_password=False)
     app = create_app(database_url=url)
+    from datetime import timedelta
+    from fastapi import Header, HTTPException
+    test_clock_key = secrets.token_urlsafe(32)
+    clock_offset = timedelta()
+    real_clock = app.state.clock
+    app.state.clock = lambda: real_clock() + clock_offset
+
+    @app.post('/__test/advance-clock')
+    def advance_clock(minutes: int, x_test_key: str = Header()):
+        nonlocal clock_offset
+        if not secrets.compare_digest(x_test_key, test_clock_key) or not 0 <= minutes <= 31:
+            raise HTTPException(403)
+        clock_offset += timedelta(minutes=minutes)
+        return {'ok': True}
+
     root = Path(__file__).resolve().parents[2]
     app.mount('/', StaticFiles(directory=root / 'public', html=True))
     server = uvicorn.Server(uvicorn.Config(app, log_config=None, access_log=False, log_level='critical'))
@@ -60,7 +75,8 @@ def test_customer_service_browser_queries_real_isolated_catalog(client, tmp_path
                 time.sleep(0.05)
             assert server.started
             env = os.environ.copy()
-            env.update(SHOP_BROWSER_TEST_ORIGIN=f'http://127.0.0.1:{port}', SHOP_BROWSER_TEST_EMAIL=emails[0], SHOP_BROWSER_TEST_PASSWORD=password)
+            env.update(SHOP_BROWSER_TEST_ORIGIN=f'http://127.0.0.1:{port}', SHOP_BROWSER_TEST_EMAIL=emails[0], SHOP_BROWSER_TEST_PASSWORD=password,
+                       SHOP_BROWSER_TEST_CLOCK_KEY=test_clock_key)
             result = subprocess.run(['node', str(root / 'e2e/customer-service-real.mjs')], env=env, capture_output=True, text=True, timeout=45)
             assert result.returncode == 0, result.stdout + result.stderr
         finally:

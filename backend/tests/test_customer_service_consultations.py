@@ -40,6 +40,103 @@ def assert_error(response, status, code):
     assert response.json()["data"] is None
 
 
+def test_anonymous_list_detail_and_consultation_expose_only_product_facts(consultation_client):
+    client = consultation_client
+    client.cookies.clear()
+    client.headers['X-CSRF-Token'] = client.get('/api/auth/csrf').json()['csrf_token']
+    listing = client.get(PREFIX + '/products')
+    assert listing.status_code == 200
+    expected = {'id': PRODUCT_ID, 'name': '春日轻盈针织开衫', 'category': '女装',
+                'price': '129.00', 'stock': 24, 'is_listed': True}
+    assert listing.json()['data']['items'] == [expected]
+    assert client.get(PREFIX + '/products/' + PRODUCT_ID).json()['data'] == expected
+    created = page(client)
+    response = client.post(PREFIX + '/messages', json=message_payload(created))
+    assert response.status_code == 200
+    assert response.json()['data']['cards'][0]['product'] == expected
+    assert response.json()['data']['citations'] == []
+    assert client.get('/api/auth/me').status_code == 401
+    for path in ['/api/orders', '/api/addresses', '/api/cart', '/api/admin/orders']:
+        assert client.get(path).status_code == 401
+    assert_error(client.post(PREFIX + '/messages', json=message_payload(created, selected_order_id=str(uuid4()))), 422, 'invalid_input')
+    for key in ['user_id', 'identity', 'url', 'sql']:
+        assert_error(client.get(PREFIX + '/products', params={key: 'forbidden'}), 422, 'invalid_input')
+
+
+def test_anonymous_expiry_is_absolute_despite_queries_csrf_and_renewal(consultation_client):
+    client = consultation_client
+    client.cookies.clear()
+    client.headers['X-CSRF-Token'] = client.get('/api/auth/csrf').json()['csrf_token']
+    now = client.app.state.clock()
+    for minute in range(30):
+        client.app.state.clock = lambda minute=minute: now + timedelta(minutes=minute)
+        client.headers['X-CSRF-Token'] = client.get('/api/auth/csrf').json()['csrf_token']
+        current = page(client)
+        assert client.post(PREFIX + '/pages/renew', json={'page_instance_id': current['page_instance_id'], 'handoff_token': current['handoff_token']}).status_code == 200
+        assert client.post(PREFIX + '/messages', json=message_payload(current)).status_code == 200
+    client.app.state.clock = lambda: now + timedelta(minutes=30)
+    assert_error(client.get(PREFIX + '/products'), 401, 'authentication_required')
+    assert_error(client.post(PREFIX + '/messages', json=message_payload(current)), 401, 'authentication_required')
+    assert_error(client.post(PREFIX + '/pages/renew', json={'page_instance_id': current['page_instance_id'], 'handoff_token': current['handoff_token']}), 401, 'authentication_required')
+
+
+def test_anonymous_logout_revokes_cookie_and_new_session_cannot_reuse_pages(consultation_client):
+    client = consultation_client
+    client.cookies.clear()
+    client.headers['X-CSRF-Token'] = client.get('/api/auth/csrf').json()['csrf_token']
+    created = page(client)
+    old_cookie = client.cookies.get('shop_session')
+    assert client.post('/api/auth/logout', headers={'Origin': 'https://other.example'}).status_code == 403
+    assert client.post('/api/auth/logout').status_code == 204
+    assert client.cookies.get('shop_session') is None
+    client.cookies.set('shop_session', old_cookie)
+    assert_error(client.get(PREFIX + '/products'), 401, 'authentication_required')
+    assert_error(client.post(PREFIX + '/messages', json=message_payload(created)), 401, 'authentication_required')
+    client.cookies.clear()
+    client.headers['X-CSRF-Token'] = client.get('/api/auth/csrf').json()['csrf_token']
+    assert_error(client.post(PREFIX + '/messages', json=message_payload(created)), 403, 'resource_unavailable')
+    assert_error(client.post(PREFIX + '/pages/renew', json={'page_instance_id': created['page_instance_id'], 'handoff_token': created['handoff_token']}), 403, 'resource_unavailable')
+    assert page(client, handoff_token=created['handoff_token'])['consultation_id'] != created['consultation_id']
+    assert client.get(PREFIX + '/products').status_code == 200
+
+
+def test_anonymous_get_and_message_share_session_and_ip_quotas(consultation_client):
+    client = consultation_client
+    with client.app.state.session_factory.begin() as db:
+        db.execute(text('DELETE FROM customer_service_rate_limit_events'))
+        db.execute(text('DELETE FROM customer_service_rate_limits'))
+    now = client.app.state.clock()
+    client.app.state.clock = lambda: now
+    for _ in range(3):
+        client.cookies.clear()
+        client.headers['X-CSRF-Token'] = client.get('/api/auth/csrf').json()['csrf_token']
+        created = page(client)
+        for _ in range(10):
+            assert client.get(PREFIX + '/products').status_code == 200
+            assert client.post(PREFIX + '/messages', json=message_payload(created)).status_code == 200
+        assert_error(client.get(PREFIX + '/products'), 429, 'rate_limited')
+    client.cookies.clear()
+    client.headers['X-CSRF-Token'] = client.get('/api/auth/csrf').json()['csrf_token']
+    response = client.get(PREFIX + '/products', headers={'X-Forwarded-For': '192.0.2.1'})
+    assert_error(response, 429, 'rate_limited')
+    assert 1 <= int(response.headers['Retry-After']) <= 60
+    client.app.state.clock = lambda: now + timedelta(seconds=60)
+    assert client.get(PREFIX + '/products').status_code == 200
+
+
+def test_anonymous_page_expiry_and_post_csrf_origin(consultation_client):
+    client = consultation_client
+    client.cookies.clear()
+    client.headers['X-CSRF-Token'] = client.get('/api/auth/csrf').json()['csrf_token']
+    created = page(client)
+    assert_error(client.post(PREFIX + '/pages', json={}, headers={'X-CSRF-Token': 'bad'}), 403, 'forbidden')
+    assert_error(client.post(PREFIX + '/messages', json=message_payload(created), headers={'Origin': 'https://other.example'}), 403, 'forbidden')
+    now = client.app.state.clock()
+    client.app.state.clock = lambda: now + timedelta(minutes=10)
+    assert_error(client.post(PREFIX + '/messages', json=message_payload(created)), 410, 'page_expired')
+    assert_error(client.post(PREFIX + '/pages/renew', json={'page_instance_id': created['page_instance_id'], 'handoff_token': created['handoff_token']}), 410, 'page_expired')
+
+
 def test_list_select_and_dedupe_do_not_repeat_tools(consultation_client, monkeypatch):
     client = consultation_client
     created = page(client)

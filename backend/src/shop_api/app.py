@@ -48,7 +48,8 @@ from shop_api.identity import (
 )
 
 
-def create_app(database_url: str | None = None, *, synthetic_product_exchange=None) -> FastAPI:
+def create_app(database_url: str | None = None, *, synthetic_product_exchange=None,
+               product_transport=None) -> FastAPI:
     resolved_database_url = database_url or os.getenv("SHOP_DATABASE_URL")
     if not resolved_database_url:
         raise RuntimeError("SHOP_DATABASE_URL must be configured")
@@ -99,7 +100,11 @@ def create_app(database_url: str | None = None, *, synthetic_product_exchange=No
     app.state.customer_service_buyer_ids = set()
     # Trusted server constructor seam only. No env/browser/provider activation.
     app.state.customer_service_synthetic_transport = None
-    if synthetic_product_exchange is not None:
+    if synthetic_product_exchange is not None and product_transport is not None:
+        raise RuntimeError("Inject either a synthetic exchange or a built transport, not both")
+    if product_transport is not None:
+        app.state.customer_service_synthetic_transport = product_transport
+    elif synthetic_product_exchange is not None:
         from shop_api.customer_service_model_budget import ModelBudget
         from shop_api.customer_service_model_transport import CompletionTransport
         app.state.customer_service_synthetic_transport = CompletionTransport(

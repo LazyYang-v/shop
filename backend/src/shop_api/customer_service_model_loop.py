@@ -66,7 +66,7 @@ def _run_product_loop(request, session_id, deadline, mcp, product_id, transport,
         sanitized_calls, replies = [], []
         for call in calls:
             if (not isinstance(call, dict) or set(call) != {'id', 'type', 'function'} or call['type'] != 'function'
-                    or not isinstance(call['id'], str) or not re.fullmatch(r'call_[1-4]', call['id'])
+                    or not isinstance(call['id'], str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', call['id'])
                     or call['id'] in used_ids):
                 raise CustomerServiceUnavailable
             used_ids.add(call['id'])

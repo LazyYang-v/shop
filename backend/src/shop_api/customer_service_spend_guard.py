@@ -21,7 +21,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from shop_api.customer_service_model_budget import (
-    ModelBudgetDenied, ModelBudgetUnavailable, ModelReservationNotFound,
+    INPUT_LIMIT, OUTPUT_LIMIT, ModelBudgetDenied, ModelBudgetUnavailable,
+    ModelReservationNotFound,
 )
 
 MAX_ATTEMPTS = 200
@@ -185,10 +186,10 @@ class SpendGuard:
                                 price_card=CAST(:card AS jsonb) WHERE id=1"""),
                             {"now": now, "digest": digest, "card": price_card.canonical_json()})
                     input_tokens = row.input_tokens
-                    output_tokens = row.charged_tokens - input_tokens
-                    if output_tokens < 0:
-                        raise ModelBudgetUnavailable("Reservation token split is invalid")
-                    reserved_fen = price_card.cost_fen(input_tokens, output_tokens)
+                    input_bound = INPUT_LIMIT if row.metering_mode == "estimated" else input_tokens
+                    if not 0 <= input_bound <= INPUT_LIMIT:
+                        raise ModelBudgetUnavailable("Reservation input bound is invalid")
+                    reserved_fen = price_card.cost_fen(input_bound, OUTPUT_LIMIT)
                     if paid.attempts_committed + 1 > paid.max_attempts:
                         reason = "attempt_cap"
                     elif paid.charged_fen + reserved_fen > paid.cap_fen:
@@ -265,8 +266,10 @@ class SpendGuard:
                 if row.ended_at is not None or now >= row.expires_at:
                     return row.paid_reserved_fen
                 card = PriceCard.from_json(paid.price_card)
-                input_bound = row.input_tokens
-                output_bound = row.charged_tokens - input_bound
+                input_bound = INPUT_LIMIT if row.metering_mode == "estimated" else row.input_tokens
+                output_bound = OUTPUT_LIMIT
+                if not 0 <= input_bound <= INPUT_LIMIT:
+                    raise ModelBudgetUnavailable("Reservation input bound is invalid")
                 if input_tokens > input_bound or output_tokens > output_bound:
                     latch = "usage_over_bound"
                     db.execute(text("""UPDATE customer_service_paid_budget

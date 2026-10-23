@@ -8,6 +8,7 @@ from urllib.request import Request, build_opener, HTTPRedirectHandler
 
 from shop_api.customer_service import CustomerServiceUnavailable
 from shop_api.customer_service_model_budget import Completion, ProviderUsage
+from shop_api.customer_service_spend_guard import PriceCard, SpendGuard
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -25,10 +26,25 @@ class CompletionTransport:
     their durable reservation until TTL; this transport never retries them.
     """
 
-    def __init__(self, budget, *, exchange=None):
-        self._budget = budget
+    def __init__(self, budget, *, exchange=None, spend_guard=None, price_card=None,
+                 provider_token=None):
         # Injection is for local tests. The production exchange has a fixed origin.
+        if (spend_guard is None) != (price_card is None):
+            raise ValueError("Paid transport requires both a spend guard and a price card")
+        if spend_guard is not None and not isinstance(spend_guard, SpendGuard):
+            raise ValueError("Invalid paid spend guard")
+        if price_card is not None and not isinstance(price_card, PriceCard):
+            raise ValueError("Invalid paid price card")
+        if provider_token is not None and (not isinstance(provider_token, str) or not provider_token):
+            raise ValueError("Invalid provider credential")
+        if exchange is CompletionTransport._https_exchange and (
+                spend_guard is None or price_card is None or provider_token is None):
+            raise ValueError("Real provider transport requires paid budget, price card and credential")
+        self._budget = budget
         self._exchange = exchange
+        self._spend_guard = spend_guard
+        self._price_card = price_card
+        self._provider_token = provider_token
         self._workers = ThreadPoolExecutor(max_workers=2)
         self._capacity = BoundedSemaphore(2)
 
@@ -53,8 +69,13 @@ class CompletionTransport:
         cancelled = Event()
         try:
             payload, reservation, timeout = turn.prepare(facts)
+            # The paid permit is committed before any worker can reach the exchange.
+            if self._spend_guard is not None:
+                self._spend_guard.reserve(reservation.id, session_id=reservation.session_id,
+                                          price_card=self._price_card)
             deadline = time.monotonic() + timeout
-            future = self._workers.submit(self._complete, reservation, payload, token, deadline, cancelled)
+            future = self._workers.submit(self._complete, reservation, payload, token, deadline,
+                                          cancelled, self._spend_guard is not None)
         except Exception:
             self._capacity.release()
             raise
@@ -74,11 +95,15 @@ class CompletionTransport:
         except Exception:
             raise CustomerServiceUnavailable from None
 
-    def _complete(self, reservation, payload, token, deadline, cancelled):
+    def _complete(self, reservation, payload, token, deadline, cancelled, paid):
         remaining = deadline - time.monotonic()
         if cancelled.is_set() or remaining <= 0:
             raise CustomerServiceUnavailable
-        response = self._exchange(payload, token, remaining)
+        if paid and not self._spend_guard.claim_dispatch(
+                reservation.id, session_id=reservation.session_id):
+            # A claimed or expired permit is never resent; the charge is retained.
+            raise CustomerServiceUnavailable
+        response = self._exchange(payload, token or self._provider_token or '', remaining)
         if not isinstance(response, dict) or response.get('object') != 'chat.completion':
             raise CustomerServiceUnavailable
         choices = response.get('choices')
@@ -90,13 +115,20 @@ class CompletionTransport:
         if not isinstance(usage, dict):
             usage = {}
         counts = ProviderUsage(usage.get('prompt_tokens'), usage.get('completion_tokens'))
+        # Truncated/filtered/tool output is not a verified product answer.
+        valid = (choices[0]['finish_reason'] in {'stop', 'tool_calls'}
+                 and type(counts.input_tokens) is int and type(counts.output_tokens) is int
+                 and counts.input_tokens >= 0 and counts.input_tokens <= reservation.reserved_tokens - 1500
+                 and counts.output_tokens >= 0 and counts.output_tokens <= 1500)
+        # Refund only before the token ledger ends the reservation, and only for
+        # usage this transport has just validated.
+        if paid and valid:
+            self._spend_guard.settle(reservation.id, session_id=reservation.session_id,
+                                     input_tokens=counts.input_tokens,
+                                     output_tokens=counts.output_tokens)
         self._budget.settle_confirmed_end(reservation.session_id, reservation.id,
                                          completion=Completion.SUCCESS, usage=counts)
-        # Truncated/filtered/tool output is not a verified product answer.
-        if (choices[0]['finish_reason'] not in {'stop', 'tool_calls'}
-                or type(counts.input_tokens) is not int or type(counts.output_tokens) is not int
-                or counts.input_tokens < 0 or counts.input_tokens > reservation.reserved_tokens - 1500
-                or counts.output_tokens < 0 or counts.output_tokens > 1500):
+        if not valid:
             raise CustomerServiceUnavailable
         return response
 

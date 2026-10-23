@@ -2,15 +2,47 @@ from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock
 from uuid import uuid4
+import json
 
 import pytest
+from sqlalchemy import text
 
 from shop_api.customer_service import CustomerServiceUnavailable
 from shop_api.customer_service_model import ModelProductFacts
 from shop_api.customer_service_model_budget import ModelBudget, ModelBudgetDenied, Completion
 from shop_api.customer_service_model_transport import CompletionTransport
 from shop_api.customer_service_model_turn import ModelTurn
+from shop_api.customer_service_spend_guard import PriceCard, SpendGuard
 from test_customer_service_model_budget import budget_context
+
+
+CARD = PriceCard(version='fake-v1', provider='fake', model='fake-model',
+                 source='fixture://official-snapshot', approval='fixture-only',
+                 currency='USD', input_micros=1_000_000, output_micros=2_000_000,
+                 cache_hit_micros=500_000, fx_numerator=8, fx_denominator=1)
+
+
+@pytest.fixture
+def paid_budget_reset(budget_context):
+    factory = budget_context[0]
+    with factory() as db:
+        snapshot = db.execute(text("SELECT * FROM customer_service_paid_budget WHERE id=1")).mappings().one()
+    with factory.begin() as db:
+        db.execute(text("""UPDATE customer_service_paid_budget SET state='disabled',
+            attempts_committed=0, charged_fen=0, price_card_sha256=NULL, price_card=NULL,
+            stopped_reason=NULL, armed_at=NULL, stopped_at=NULL WHERE id=1"""))
+    yield
+    with factory.begin() as db:
+        db.execute(text("""UPDATE customer_service_paid_budget SET
+            state=:state, attempts_committed=:attempts, charged_fen=:charged,
+            price_card_sha256=:digest, price_card=CAST(:card AS jsonb),
+            stopped_reason=:reason, armed_at=:armed, stopped_at=:stopped WHERE id=1"""),
+            {"state": snapshot["state"], "attempts": snapshot["attempts_committed"],
+             "charged": snapshot["charged_fen"], "digest": snapshot["price_card_sha256"],
+             "card": None if snapshot["price_card"] is None else
+             json.dumps(snapshot["price_card"], sort_keys=True, separators=(",", ":")),
+             "reason": snapshot["stopped_reason"], "armed": snapshot["armed_at"],
+             "stopped": snapshot["stopped_at"]})
 
 
 class LocalTurn:
@@ -213,3 +245,100 @@ def test_incomplete_response_never_proves_remote_end(budget_context, response):
         # Test fixture teardown owns cleanup of synthetic outstanding reservations.
     finally:
         transport.close()
+
+
+def test_real_provider_exchange_requires_paid_controls():
+    with pytest.raises(ValueError):
+        CompletionTransport(Mock(), exchange=CompletionTransport._https_exchange)
+    with pytest.raises(ValueError):
+        CompletionTransport(Mock(), exchange=lambda *args: completion(), spend_guard=Mock())
+    with pytest.raises(ValueError):
+        CompletionTransport(Mock(), exchange=lambda *args: completion(), price_card=CARD)
+    with pytest.raises(ValueError):
+        CompletionTransport(Mock(), exchange=CompletionTransport._https_exchange,
+                            spend_guard=Mock(), price_card=CARD, provider_token='token')
+
+
+def test_paid_transport_reserves_before_send_claims_once_and_settles(budget_context, paid_budget_reset):
+    factory, ids, clock = budget_context
+    budget = ModelBudget(factory, clock=lambda: clock[0])
+    guard = SpendGuard(factory, clock=lambda: clock[0])
+    observed = []
+
+    def exchange(payload, token, timeout):
+        status = guard.status()
+        observed.append((token, status.attempts, status.charged_fen))
+        return completion()
+
+    transport = CompletionTransport(budget, exchange=exchange, spend_guard=guard,
+                                    price_card=CARD, provider_token='synthetic-credential')
+    turn = LocalTurn(budget, ids[0])
+    try:
+        result = transport.execute(turn, None, token='')
+    finally:
+        transport.close()
+    assert result['choices'][0]['finish_reason'] == 'stop'
+    # 100 input + 1500 output allowance was reserved before the exchange ran.
+    assert observed == [('synthetic-credential', 1, 3)]
+    status = guard.status()
+    assert (status.attempts, status.charged_fen) == (1, 1)
+    with factory() as db:
+        row = db.execute(text('''SELECT dispatch_claimed_at, paid_reserved_fen, paid_charged_fen
+            FROM customer_service_model_reservations WHERE id=:id'''), {'id': turn.reservation.id}).one()
+    assert row.dispatch_claimed_at is not None
+    assert (row.paid_reserved_fen, row.paid_charged_fen) == (3, 1)
+
+
+def test_paid_transport_retains_full_charge_when_exchange_fails(budget_context, paid_budget_reset):
+    factory, ids, clock = budget_context
+    budget = ModelBudget(factory, clock=lambda: clock[0])
+    guard = SpendGuard(factory, clock=lambda: clock[0])
+
+    def disconnected(*args):
+        raise OSError('synthetic-test-secret')
+
+    transport = CompletionTransport(budget, exchange=disconnected, spend_guard=guard,
+                                    price_card=CARD, provider_token='synthetic-credential')
+    try:
+        with pytest.raises(CustomerServiceUnavailable) as error:
+            transport.execute(LocalTurn(budget, ids[0]), None, token='')
+        assert 'synthetic-test-secret' not in str(error.value)
+    finally:
+        transport.close()
+    status = guard.status()
+    assert (status.attempts, status.charged_fen) == (1, 3)
+
+
+def test_paid_transport_never_sends_without_claim(budget_context, paid_budget_reset, monkeypatch):
+    factory, ids, clock = budget_context
+    budget = ModelBudget(factory, clock=lambda: clock[0])
+    guard = SpendGuard(factory, clock=lambda: clock[0])
+    monkeypatch.setattr(guard, 'claim_dispatch', lambda *args, **kwargs: False)
+    exchange = Mock(return_value=completion())
+    transport = CompletionTransport(budget, exchange=exchange, spend_guard=guard,
+                                    price_card=CARD, provider_token='synthetic-credential')
+    try:
+        with pytest.raises(CustomerServiceUnavailable):
+            transport.execute(LocalTurn(budget, ids[0]), None, token='')
+    finally:
+        transport.close()
+    exchange.assert_not_called()
+    status = guard.status()
+    assert (status.attempts, status.charged_fen) == (1, 3)
+
+
+def test_paid_transport_does_not_refund_rejected_usage(budget_context, paid_budget_reset):
+    factory, ids, clock = budget_context
+    budget = ModelBudget(factory, clock=lambda: clock[0])
+    guard = SpendGuard(factory, clock=lambda: clock[0])
+    oversized = completion()
+    oversized['usage'] = {'prompt_tokens': 100, 'completion_tokens': 1501}
+    transport = CompletionTransport(budget, exchange=lambda *args: oversized, spend_guard=guard,
+                                    price_card=CARD, provider_token='synthetic-credential')
+    try:
+        with pytest.raises(CustomerServiceUnavailable):
+            transport.execute(LocalTurn(budget, ids[0]), None, token='')
+    finally:
+        transport.close()
+    status = guard.status()
+    assert (status.attempts, status.charged_fen) == (1, 3)

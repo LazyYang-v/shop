@@ -33,6 +33,11 @@ def isolated_paid_budget(budget_context):
     factory = budget_context[0]
     with factory() as db:
         snapshot = db.execute(text("SELECT * FROM customer_service_paid_budget WHERE id=1")).mappings().one()
+    # Preserve real evidence across the test, but give each test a pristine baseline.
+    with factory.begin() as db:
+        db.execute(text("""UPDATE customer_service_paid_budget SET state='disabled',
+            attempts_committed=0, charged_fen=0, price_card_sha256=NULL, price_card=NULL,
+            stopped_reason=NULL, armed_at=NULL, stopped_at=NULL WHERE id=1"""))
     yield
     with factory.begin() as db:
         db.execute(text("""UPDATE customer_service_paid_budget SET
@@ -195,3 +200,28 @@ def test_exact_rounding_rounds_up():
                      cache_hit_micros=0, fx_numerator=1, fx_denominator=1)
     assert tiny.cost_fen(1, 0) == 1
     assert CARD.cost_fen(12000, 1500) == 12
+
+
+def test_estimated_reservation_uses_full_input_and_output_bounds(budget_context):
+    factory, ids, clock = budget_context
+    budget = ModelBudget(factory, clock=lambda: clock[0])
+    guard = SpendGuard(factory, clock=lambda: clock[0])
+    token = budget.reserve(ids[0], input_tokens=1243, metering_mode='estimated')
+    paid = guard.reserve(token.id, session_id=ids[0], price_card=CARD)
+    # Estimated mode reserves 12000 input + 1500 output, not the measured input.
+    assert paid.reserved_fen == 12
+    assert guard.settle(token.id, session_id=ids[0], input_tokens=293, output_tokens=124) == 1
+    assert guard.status().charged_fen == 1
+
+
+def test_estimated_usage_above_full_output_bound_latches(budget_context):
+    factory, ids, clock = budget_context
+    budget = ModelBudget(factory, clock=lambda: clock[0])
+    guard = SpendGuard(factory, clock=lambda: clock[0])
+    token = budget.reserve(ids[0], input_tokens=1243, metering_mode='estimated')
+    guard.reserve(token.id, session_id=ids[0], price_card=CARD)
+    with pytest.raises(ModelBudgetUnavailable):
+        guard.settle(token.id, session_id=ids[0], input_tokens=100, output_tokens=1501)
+    status = guard.status()
+    assert status.state == "blocked"
+    assert status.charged_fen == 12

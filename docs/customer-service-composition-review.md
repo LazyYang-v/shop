@@ -2,7 +2,7 @@
 
 日期：2026-10-24。固定比较：`git diff 12f9346ce31d009cf01eb32cf9380e4af9665327...039c7c4a7767a3504fe1896e91028e02656e6fc0`。审查覆盖该范围十个提交，与 [#9 原规格](https://github.com/LazyYang-v/docs/issues/9)、[#4 合成范围修订](https://github.com/LazyYang-v/docs/issues/4#issuecomment-6345597736)、[运行契约](customer-service-runtime-contract.md)分别核对。两个独立只读审查均未运行数据库、调用外部提供方或修改源文件。
 
-以下行号指初审版本 `039c7c4`，修复后可能移动。已知真实政策、WeKnora 适配与当前部署/恢复缺口另见[最终评测](customer-service-final-acceptance.md)，不将范围阻塞写成新增越权实施的授权。
+以下行号指初审版本 `039c7c4`，修复后可能移动。后续 `4e43485` 已补齐实际部署及新卷恢复；当前按用户批准的[作品集发布范围](customer-service-portfolio-release.md)收口，真实政策与 WeKnora 产品接入归档为生产化条件，不阻塞作品集。下列两轴发现和修复仍保留原审查版本，不改写为新一轮审查。
 
 ## Standards
 

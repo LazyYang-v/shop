@@ -23,7 +23,7 @@
 
 ## 商城补偿的可执行验证
 
-当前合成补偿代码为 `backend/src/shop_api/customer_service_policy.py`，公共接口验收位于 `backend/tests/test_customer_service_policy.py`，浏览器经 `/api/customer-service/messages` 观察结果。最终受测代码 `a4478a6` 的完整后端 399 项通过，包含合成政策、组合故障和桌面/移动真实 Chrome；页面模拟 28 项另列。真实提供方与 WeKnora 请求均为 0，不能据此解除下述外部门槛。`docs/policy-relevance-offline.py` 仅是独立参考模型；其结果单列，不能替代商城 API 或真实平台证据。
+当前合成补偿代码为 `backend/src/shop_api/customer_service_policy.py`，公共接口验收位于 `backend/tests/test_customer_service_policy.py`，浏览器经 `/api/customer-service/messages` 观察结果。功能候选 `941fe4e` 与最终受测 `a4478a6` 产品代码相同，完整后端 399 项通过，包含合成政策、组合故障和桌面/移动真实 Chrome；页面模拟 28 项另列。该候选验收新增真实模型与 WeKnora 请求为 0，六工具模型测试采用合成 exchange，`4e43485` 部署采用确定性组合。#3 历史 `722ed62` 的 6 次真实模型请求（2 次诊断失败、4 次成功）独立见[兼容性归档](customer-service-issue-3-acceptance.md#c-真实调用与重试验收2026-10-23)，不等于当前六工具或 WeKnora 接入实测。`docs/policy-relevance-offline.py` 仅是独立参考模型；其结果不能替代商城 API 或真实平台证据。
 
 | 补偿 | 固定场景/预期 | 实现与验证状态 |
 |---|---|---|
@@ -35,10 +35,12 @@
 
 ## 真实首版放行阻塞
 
+**本节已归档为生产化前置条件，不阻塞作品集或 #9。** 标题保留供历史链接使用。2026-10-24 项目负责人已批准[作品集发布范围与 13 项门槛](customer-service-portfolio-release.md)；下列未知项不改写为已验证，也不在当前交付中要求补齐。
+
 1. **政策及来源缺失。** 需要商城批准的真实规范正文、来源、版本、生效条件及维护责任。合成规则不得填补此项。
 2. **真实检索适配与发布清理未实现。** 新端点最小权限、批准 KB 与登记映射、不可变版本发布、立即撤回和异步清理验证均须完成；历史探针不等于产品调用链。
 3. **真实依赖故障与质量未验证。** deadline、并发、限流失效、partial_failures、取消传播和独立政策问题集仍缺实际证据；不从成功样例推导普遍保证。
 4. **外部保留契约未知。** [外部保留核实](customer-service-retention-timeout-evidence.md)、[提供方政策复核](customer-service-deepseek-policy-review.md)没有证明 API 零保留、训练退出适用性或日志/备份/删除期限。受控虚构数据演示不解除真实数据门槛。
 5. **真实候选部署仍须独立验证。** 合成 #9 的[准确镜像部署与新卷恢复](../deploy/customer-service-demo/ticket-9-acceptance.md)已在后续授权范围完成，两端浏览器及 478.269 秒恢复通过。此证据仅覆盖合成政策、虚构数据和默认确定性路径；未来真实政策/适配/提供方候选必须重新完成自己的部署、故障及恢复，不能继承合成结果。
 
-用户已确认真实政策及账号适用保留资料尚未准备；[真实放行资料与工程证据清单](customer-service-real-release-prerequisites.md)列出待填字段及逐项通过条件。以上任一关键阻塞未解除，都不能宣称真实商城首版验收通过。#9 可以交付合成组合演示、固定评测、证据汇总和明确缺口；只有实际满足工单验收才可关闭，不因其他依赖工单已关闭而跳过门槛。
+[生产化前置条件（归档）](customer-service-real-release-prerequisites.md)保留上述真实条件与未知字段；用户已决定当前只交付作品集，正式商城政策、真实买家数据处理和账号级契约不属于当前验收。#9 依据用户批准的[13 项作品集门槛](customer-service-portfolio-release.md)收口；不再重复将本节归档项报告为当前阻塞。归档不表示真实条件满足，不宣称真实商城首版验收通过。检索零命中不证明缓存或备份已删除，回复时限不等于删除时限。

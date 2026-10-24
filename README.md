@@ -4,7 +4,11 @@
 
 ## 客服演示与验收
 
-客服当前使用虚构商品、专用买家和明确标注的合成政策；确认及结果核验复用商城权限与取消事务。真实商城政策和真实 WeKnora 产品入口保持关闭。组合演示、桌面/移动复现命令、黄金/边界/回归/安全场景及实际结果见[客服最终评测](docs/customer-service-final-acceptance.md)，外部能力证据与未完成门槛见[WeKnora 能力矩阵](docs/customer-service-weknora-acceptance.md)。默认运行范围及冻结参数以[客服运行契约](docs/customer-service-runtime-contract.md)为准。#9 已完成[隔离部署与新卷恢复验收](deploy/customer-service-demo/ticket-9-acceptance.md)，本机入口为 http://127.0.0.1:18011/customer-service.html；真实首版仍需[批准资料与工程证据](docs/customer-service-real-release-prerequisites.md)。
+客服已按用户批准的[13 项作品集发布门槛](docs/customer-service-portfolio-release.md)完成验收，功能候选为 `941fe4e`，源码位于[私有集成分支](https://github.com/LazyYang-v/shop/tree/integration/customer-service-ticket-9)。交付只使用虚构商品、专用买家和明确标注的合成政策；确认及结果核验复用商城权限与取消事务，不接真实买家数据。真实商城政策、真实 WeKnora 产品入口与持久演示的外部模型调用保持关闭。
+
+组合咨询、桌面/移动复现及 32 个固定场景见[客服最终评测](docs/customer-service-final-acceptance.md)，默认参数见[运行契约](docs/customer-service-runtime-contract.md)。`a4478a6` 完整回归为 399 项后端、28 项页面通过，六工具模型循环使用合成 exchange；`4e43485` 镜像的[隔离部署与 478.269 秒恢复](deploy/customer-service-demo/ticket-9-acceptance.md)采用确定性组合，本机入口为 http://127.0.0.1:18011/customer-service.html。这些 #9 验收新增真实模型/WeKnora 调用均为 0；[#3 历史兼容性](docs/customer-service-issue-3-acceptance.md#c-真实调用与重试验收2026-10-23)在 `722ed62` 单独记录 6 次真实模型请求（2 次诊断失败、4 次成功），不等于当前六工具真实兼容性。WeKnora 的历史证据与合成补偿见[能力矩阵](docs/customer-service-weknora-acceptance.md)。
+
+本次结论为“客服作品集发布验收通过”。[生产化前置条件](docs/customer-service-real-release-prerequisites.md)已归档，不阻塞作品集，也不表示真实商城上线、供应商零保留或账号级承诺已得到证明。
 
 ## 前置条件
 

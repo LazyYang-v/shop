@@ -2,7 +2,7 @@
 
 日期：2026-10-22。用途：Q1–Q20 整体审核。下表保留当时的设计与待验证状态。
 
-2026-10-24 当前状态：#3–#8 已按各自获批范围实施并验收；#9 合成组合及审查修复已完成，最终完整后端/API/真实 Chrome 399 项、页面模拟 28 项通过，真实首版仍阻塞、工单保持 OPEN。以[运行契约](customer-service-runtime-contract.md)、[固定评测及实际结果](customer-service-final-acceptance.md)、[WeKnora 能力与补偿矩阵](customer-service-weknora-acceptance.md)为当前入口；下文“尚未实现”“暂不实现”等历史表述不覆盖后续已提交实现。真实政策与真实 WeKnora 仍未放行，不据历史清单或依赖票关闭宣称首版通过。
+2026-10-24 当前状态：#3–#8 已按各自获批范围实施并验收；#9 按用户批准的[13 项作品集发布门槛](customer-service-portfolio-release.md)完成验收并收口。候选 `941fe4e`、回归 `a4478a6`（399 项后端、28 项模拟页面）、部署 `4e43485` 的版本对应关系和历史 #3 真实请求 6 次分别记录。以作品集发布记录、[运行契约](customer-service-runtime-contract.md)、[固定评测](customer-service-final-acceptance.md)及[WeKnora 矩阵](customer-service-weknora-acceptance.md)为当前入口；下文“尚未实现”等为历史状态。[生产化条件](customer-service-real-release-prerequisites.md)已归档，不阻塞作品集；真实数据、真实政策和真实 WeKnora 产品入口仍关闭，不宣称真实商城上线。
 
 状态严格区分：**已实现**仅表示代码存在；只有明确列出的实际测试才表示验证通过。**已设计未实现**表示访谈已确认或列明建议值，尚无实现与测试。**待实际核实**表示缺外部能力证据，不据截图推断。以下未运行的验收均为待验证，不代表测试已经存在。
 

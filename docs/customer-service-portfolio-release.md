@@ -51,3 +51,5 @@
 本次只更正文档和工单范围，未改产品代码、测试或运行配置；复用上表已明确版本的运行结果。收口时再次核对功能候选远端 SHA、运行容器 API 镜像及 loopback 健康，均与记录一致。此次 13 份 Markdown 的 159 个本地链接/锚点、13 个门槛及批准人、功能版本一致性、部署静态预检和 `git diff --check` 均通过；首次链接检查发现 5 个 #3 锚点遗漏日期后缀，修正后全部通过。这些是本次文档更新的验证，不冒充新增的 399/28 项运行。
 
 复现入口：[固定评测及正式测试命令](customer-service-final-acceptance.md#本地重复验收入口)、[实际部署/故障/恢复脚本及准确资源](../deploy/customer-service-demo/ticket-9-acceptance.md)。旧 `runtime.py` 和 `e2e/customer-service-demo.mjs` 属于早期商品阶段；当前 #9 镜像、组合和恢复以 `ticket-9-acceptance.md` 与 `e2e/customer-service-deployment.mjs` 为准，不能用旧默认镜像覆盖当前版本。
+
+工单操作状态：[作品集验收评论](https://github.com/LazyYang-v/docs/issues/9#issuecomment-6382962885)已发布。覆盖原工单正文和关闭工单的操作分别被自动审批拒绝，要求明确批准具体动作；未改原正文或标签，工单当前仍为 OPEN。这是工单操作限制，不改变作品集验收结论，也不恢复生产化阻塞。此次范围文档提交尚未推送，已发布的功能候选仍为 `941fe4e`。

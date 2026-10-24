@@ -4,7 +4,7 @@
 
 ## 客服演示与验收
 
-客服当前使用虚构商品、专用买家和明确标注的合成政策；确认及结果核验复用商城权限与取消事务。真实商城政策和真实 WeKnora 产品入口保持关闭。组合演示、桌面/移动复现命令、黄金/边界/回归/安全场景及实际结果见[客服最终评测](docs/customer-service-final-acceptance.md)，外部能力证据与未完成门槛见[WeKnora 能力矩阵](docs/customer-service-weknora-acceptance.md)。默认运行范围及冻结参数以[客服运行契约](docs/customer-service-runtime-contract.md)为准；本地源码验证不代表当前演示容器已部署该版本。
+客服当前使用虚构商品、专用买家和明确标注的合成政策；确认及结果核验复用商城权限与取消事务。真实商城政策和真实 WeKnora 产品入口保持关闭。组合演示、桌面/移动复现命令、黄金/边界/回归/安全场景及实际结果见[客服最终评测](docs/customer-service-final-acceptance.md)，外部能力证据与未完成门槛见[WeKnora 能力矩阵](docs/customer-service-weknora-acceptance.md)。默认运行范围及冻结参数以[客服运行契约](docs/customer-service-runtime-contract.md)为准。#9 已完成[隔离部署与新卷恢复验收](deploy/customer-service-demo/ticket-9-acceptance.md)，本机入口为 http://127.0.0.1:18011/customer-service.html；真实首版仍需[批准资料与工程证据](docs/customer-service-real-release-prerequisites.md)。
 
 ## 前置条件
 

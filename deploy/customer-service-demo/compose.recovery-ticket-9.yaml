@@ -1,0 +1,7 @@
+# Dedicated subnet for the authorized ticket 9 recovery copy when Docker's
+# default address pools are exhausted. It does not change existing networks.
+networks:
+  ingress:
+    ipam:
+      config:
+        - subnet: 10.203.9.0/28

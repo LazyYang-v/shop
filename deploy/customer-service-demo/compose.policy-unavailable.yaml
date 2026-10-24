@@ -1,0 +1,8 @@
+# Explicit, temporary acceptance fault for the isolated demo only.
+# Recreate shop-api with this override to leave policy retrieval unconfigured;
+# recreate it from compose.products.yaml alone immediately after the check.
+services:
+  shop-api:
+    environment:
+      SHOP_CUSTOMER_SERVICE_POLICY_PATH: ""
+      SHOP_CUSTOMER_SERVICE_POLICY_SHA256: ""

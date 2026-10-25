@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test'
 test.beforeEach(async ({ page }) => {
   await page.route('**/api/auth/csrf', route => route.fulfill({ json: { csrf_token: 'synthetic-csrf' } }))
   await page.route('**/api/auth/me', route => route.fulfill({ status: 401, json: { detail: '需要登录' } }))
+  await page.route('**/api/customer-service/mode', route => route.fulfill({ json: { mode: 'demo', enabled: true } }))
 })
 
 const product = {
@@ -36,7 +37,7 @@ test('home customer-service entry opens the page and unavailable service is expl
   await page.route('**/api/customer-service/messages', route => route.fulfill({ status: 503, json: {
     ...response('unavailable'), code: 'model_unavailable', data: null,
   } }))
-  await page.goto('/')
+  await page.goto('/', { waitUntil: 'domcontentloaded' })
   await page.getByRole('link', { name: /联系客服/ }).first().click()
   await expect(page).toHaveURL(/customer-service\.html/)
   await page.getByLabel('请输入想咨询的问题').fill('测试商品')
@@ -46,7 +47,11 @@ test('home customer-service entry opens the page and unavailable service is expl
   expect(productRequests).toBe(0)
   await expect(log).not.toContainText('private traceback')
   await expect(log.locator('script')).toHaveCount(0)
-  expect(await page.evaluate(() => document.querySelectorAll('script').length)).toBe(1)
+  // Only the support actions, workspace presentation and application scripts run.
+  expect(await page.evaluate(() => ({
+    total: document.querySelectorAll('script').length,
+    external: document.querySelectorAll('script[src]').length,
+  }))).toEqual({ total: 3, external: 2 })
 })
 
 test('customer-service page sends free text only to the consultation endpoint', async ({ page }) => {
@@ -76,8 +81,12 @@ test('customer-service page sends free text only to the consultation endpoint', 
 test('controlled product cards query list and detail without interpreting product copy', async ({ page }) => {
   const methods: string[] = []
   await page.route('**/api/customer-service/**', async route => {
-    methods.push(route.request().method())
     const url = new URL(route.request().url())
+    if (url.pathname.endsWith('/mode')) {
+      await route.fulfill({ json: { mode: 'demo', enabled: true } })
+      return
+    }
+    methods.push(route.request().method())
     if (url.pathname.endsWith('/products')) {
       expect([...url.searchParams.keys()].sort()).toEqual(['page', 'page_size'])
       await route.fulfill({ json: response('ok') })
@@ -89,13 +98,15 @@ test('controlled product cards query list and detail without interpreting produc
   await page.goto('/customer-service.html')
   await page.getByRole('button', { name: '查看演示商品', exact: true }).click()
   const log = page.getByRole('log', { name: '客服聊天记录' })
-  await expect(log).toContainText('可售库存：24')
-  await expect(log).toContainText('价格：¥129.00')
+  await expect(log).toContainText('现货 24 件')
+  await expect(log).toContainText('¥129.00')
   await expect(log).toContainText('2026-10-23T12:00:00+00:00')
   await expect(log).toContainText('request-demo-1')
   await expect(log).not.toContainText(product.description)
-  await page.getByRole('button', { name: '查询 测试商品 的最新价格与库存' }).click()
-  await expect(log.getByText('可售库存：24', { exact: false })).toHaveCount(2)
+  await page.getByRole('button', { name: '价格与库存' }).click()
+  await expect(log.locator('.product-card:visible')).toHaveCount(1)
+  await expect(log.locator('.previous-result')).toHaveCount(1)
+  await expect(log.locator('.product-card:visible')).toContainText('现货 24 件')
   expect(methods).toEqual(['GET', 'GET'])
 })
 
@@ -113,7 +124,7 @@ test('empty list, unknown detail and dependency failure are distinct', async ({ 
   await page.route('**/api/customer-service/products?*', route => route.fulfill({ json: response('ok') }))
   await page.getByRole('button', { name: '查看演示商品', exact: true }).click()
   await page.route(`**/api/customer-service/products/${product.id}`, route => route.fulfill({ status: 403, json: { ...response('error'), code: 'resource_unavailable', data: null } }))
-  await page.getByRole('button', { name: '查询 测试商品 的最新价格与库存' }).click()
+  await page.getByRole('button', { name: '价格与库存' }).click()
   await expect(log).toContainText('未找到可访问的演示商品')
   let failures = 0
   await page.route('**/api/customer-service/products?*', async route => {
@@ -135,7 +146,7 @@ for (const status of [401, 403, 422, 429]) {
     })
     await page.goto('/customer-service.html')
     await page.getByRole('button', { name: '查看演示商品', exact: true }).click()
-    await expect(page.getByRole('log').locator('.message')).toHaveCount(3)
+    await expect(page.getByRole('log').locator('.message')).toHaveCount(1)
     expect(requests).toBe(1)
     await expect(page.getByRole('log')).not.toContainText('private traceback')
   })
@@ -231,7 +242,7 @@ test('consultation binds controlled messages and never automatically replays a P
   await page.getByRole('button', { name: '开始商品咨询', exact: true }).click()
   await expect(page.getByRole('log')).toContainText('已查询演示商品')
   expect(bodies[0]).toMatchObject({ page_instance_id: 'page-test', consultation_id: 'consultation-test', text: '查看演示商品' })
-  await page.getByRole('button', { name: '咨询 测试商品 的价格与库存' }).click()
+  await page.getByRole('button', { name: '价格与库存' }).click()
   await expect(page.getByRole('log')).toContainText('商品咨询暂不可用')
   expect(bodies).toHaveLength(2)
   expect(bodies[1].text).toBe(`查看演示商品：${product.id}`)
@@ -287,14 +298,14 @@ test('refresh consumes handoff only once and auth failure disables old cards', a
   })
   await page.goto('/customer-service.html')
   await page.getByRole('button', { name: '开始商品咨询', exact: true }).click()
-  await expect(page.getByRole('button', { name: '咨询 测试商品 的价格与库存' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '价格与库存' })).toBeVisible()
   expect(pageBodies).toEqual([{}])
   await page.reload()
   await page.getByRole('button', { name: '开始商品咨询', exact: true }).click()
-  await expect(page.getByRole('button', { name: '咨询 测试商品 的价格与库存' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '价格与库存' })).toBeVisible()
   expect(pageBodies).toEqual([{}, { handoff_token: token }])
-  await page.getByRole('button', { name: '咨询 测试商品 的价格与库存' }).click()
-  await expect(page.getByRole('button', { name: '咨询 测试商品 的价格与库存' })).toBeDisabled()
+  await page.getByRole('button', { name: '价格与库存' }).click()
+  await expect(page.getByRole('button', { name: '价格与库存' })).toBeDisabled()
   expect(await page.evaluate(() => sessionStorage.getItem('shop.customer-service.handoff'))).toBeNull()
   expect(await page.evaluate(() => localStorage.getItem('shop.customer-service.handoff'))).toBeNull()
 })
@@ -332,18 +343,19 @@ test('order candidates require an explicit click before detail and never render 
     await route.fulfill({ json: { ...response('ok'), data } })
   })
   await page.goto('/customer-service.html')
-  await page.getByRole('button', { name: '查询我的订单' }).click()
+  await page.getByRole('button', { name: '我的订单', exact: true }).click()
   const log = page.getByRole('log', { name: '客服聊天记录' })
-  await expect(log).toContainText(`订单号：${orderNumber}`)
-  await expect(log).toContainText('商品：测试商品 ×1')
-  await expect(log).toContainText('金额：¥129.00')
-  await expect(log).toContainText('状态：待收货')
+  await expect(log).toContainText('订单尾号 1111')
+  await expect(log).toContainText('测试商品 ×1')
+  await expect(log).toContainText('¥129.00')
+  await expect(log).toContainText('待收货')
+  await expect(log.getByText(`订单号：${orderNumber}`)).not.toBeVisible()
   expect(bodies).toHaveLength(1)
   expect(bodies[0]).toMatchObject({ text: '查询我的订单' })
   expect(bodies[0]).not.toHaveProperty('selected_order_id')
   await expect(log).not.toContainText('收货地址')
   await expect(log).not.toContainText('13800138000')
-  await page.getByRole('button', { name: /查询订单 .* 的详情/ }).click()
+  await page.getByRole('button', { name: '咨询此订单', exact: true }).click()
   await expect(log).toContainText('物流公司：虚构速运')
   await expect(log).toContainText('运单号：DEMO-TRACK-001')
   await expect(log).toContainText('以上仅为商城已保存的物流信息，不包含实时轨迹或预计送达时间。')
@@ -383,8 +395,8 @@ test('selected buyer order receives composite refund limits and per-item partial
       } } })
   })
   await page.goto('/customer-service.html')
-  await page.getByRole('button', { name: '查询我的订单' }).click()
-  await page.getByRole('button', { name: /查询订单 .* 的详情/ }).click()
+  await page.getByRole('button', { name: '我的订单', exact: true }).click()
+  await page.getByRole('button', { name: '咨询此订单', exact: true }).click()
   await page.getByLabel('请输入想咨询的问题').fill('快递未到且想退款')
   await page.getByRole('button', { name: '发送', exact: true }).click()
   const log = page.getByRole('log')
@@ -483,11 +495,12 @@ test(`buyer confirmation handles ${confirmationResponse} responses and verifies 
     await route.fulfill({ json: { ...response('ok'), data } })
   })
   await page.goto('/customer-service.html')
-  await page.getByRole('button', { name: '查询我的订单' }).click()
+  await page.getByRole('button', { name: '我的订单', exact: true }).click()
   const log = page.getByRole('log', { name: '客服聊天记录' })
-  await page.getByRole('button', { name: `查询订单 ${orderNumber.slice(0, 8)}… 的详情` }).click()
-  await expect(log).toContainText('状态：待付款')
-  await page.getByRole('button', { name: `查询订单 ${orderNumber.slice(0, 8)}… 的详情` }).click()
+  const candidateCard = page.locator(`.order-card[data-order-id="${orderNumber}"]`).first()
+  await candidateCard.getByRole('button', { name: '咨询此订单', exact: true }).click()
+  await expect(log).toContainText('待付款')
+  await candidateCard.getByRole('button', { name: '咨询此订单', exact: true }).click()
   await expect(page.getByRole('button', { name: '申请取消订单', exact: true })).toBeVisible()
   await page.getByRole('button', { name: '申请取消订单', exact: true }).click()
   await expect(log).toContainText('取消确认方案')
@@ -528,7 +541,7 @@ test(`buyer confirmation handles ${confirmationResponse} responses and verifies 
   expect(confirmBodies[1]).toEqual(confirmBodies[0])
   expect(reconcileBodies).toHaveLength(needsReconciliation ? 1 : 0)
   expect(bodies).toHaveLength(4)
-  await expect(log).toContainText('状态：待付款')
+  await expect(log).toContainText('待付款')
 })
 }
 
@@ -545,6 +558,11 @@ test('unclear cancellation confirmation reconciles without replay and offers one
   let selectedOrderQueries = 0
   await page.route('**/api/customer-service/pages', route => route.fulfill({ status: 201, json: {
     ...response('ok'), data: { page_instance_id: 'page-unknown', consultation_id: 'consultation-unknown' },
+  } }))
+  // Keep the synthetic consultation alive: an unmocked renewal hits the real API,
+  // gets a 401, and would legitimately invalidate the pending reconciliation.
+  await page.route('**/api/customer-service/pages/renew', route => route.fulfill({ json: {
+    ...response('ok'), data: null,
   } }))
   const confirmBodies: Record<string, unknown>[] = []
   const reconcileBodies: Record<string, unknown>[] = []
@@ -579,9 +597,9 @@ test('unclear cancellation confirmation reconciles without replay and offers one
     await route.fulfill({ json: { ...response('ok'), data } })
   })
   await page.goto('/customer-service.html')
-  await page.getByRole('button', { name: '查询我的订单' }).click()
-  await expect(page.getByRole('button', { name: /查询订单 .* 的详情/ })).toBeVisible()
-  await page.getByRole('button', { name: /查询订单 .* 的详情/ }).click()
+  await page.getByRole('button', { name: '我的订单', exact: true }).click()
+  await expect(page.getByRole('button', { name: '咨询此订单', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '咨询此订单', exact: true }).click()
   await expect.poll(() => selectedOrderQueries).toBe(1)
   await expect(page.getByRole('button', { name: '申请取消订单', exact: true })).toBeVisible()
   await page.getByRole('button', { name: '申请取消订单', exact: true }).click()
@@ -649,13 +667,13 @@ test('reconciliation stops polling when authentication expires', async ({ page }
     await route.fulfill({ status: 401, json: { ...response('error'), code: 'authentication_required', data: null } })
   })
   await page.goto('/customer-service.html')
-  await page.getByRole('button', { name: '查询我的订单' }).click()
-  await page.getByRole('button', { name: /查询订单 .* 的详情/ }).click()
+  await page.getByRole('button', { name: '我的订单', exact: true }).click()
+  await page.getByRole('button', { name: '咨询此订单', exact: true }).click()
   await page.getByRole('button', { name: '申请取消订单', exact: true }).click()
   await page.getByRole('button', { name: '确认取消订单', exact: true }).click()
   await page.clock.fastForward(2250)
   await expect.poll(() => reconciles).toBe(1)
-  await expect(page.getByRole('dialog', { name: '登录后查看本人订单' })).toBeVisible()
+  await expect(page.getByRole('link', { name: '前往商城登录后继续' })).toBeVisible()
   await page.clock.fastForward(60000)
   expect(reconciles).toBe(1)
   await expect(page.getByRole('log')).toContainText('无法核验取消结果；操作编号：' + operationId)
@@ -714,8 +732,8 @@ test('reconcile-first rejects a late browser confirmation and repeats the same e
 
   await page.goto('/customer-service.html')
   const log = page.getByRole('log', { name: '客服聊天记录' })
-  await page.getByRole('button', { name: '查询我的订单' }).click()
-  await page.getByRole('button', { name: /查询订单 .* 的详情/ }).click()
+  await page.getByRole('button', { name: '我的订单', exact: true }).click()
+  await page.getByRole('button', { name: '咨询此订单', exact: true }).click()
   await page.getByRole('button', { name: '申请取消订单', exact: true }).click()
   await page.getByRole('button', { name: '确认取消订单', exact: true }).click()
   await page.clock.fastForward(2250)
@@ -790,9 +808,9 @@ test('expired cancellation card is marked unusable without execution', async ({ 
     await route.fulfill({ json: { ...response('ok'), data } })
   })
   await page.goto('/customer-service.html')
-  await page.getByRole('button', { name: '查询我的订单' }).click()
+  await page.getByRole('button', { name: '我的订单', exact: true }).click()
   const log = page.getByRole('log', { name: '客服聊天记录' })
-  await page.getByRole('button', { name: /查询订单 .* 的详情/ }).click()
+  await page.getByRole('button', { name: '咨询此订单', exact: true }).click()
   await page.getByRole('button', { name: '申请取消订单', exact: true }).click()
   await expect(log).toContainText('取消确认方案')
   await expect(log).toContainText('确认方案已过期，请重新申请取消方案。', { timeout: 5000 })
@@ -834,9 +852,9 @@ test('tampered confirmation card is rejected without rendering', async ({ page }
     await route.fulfill({ json: { ...response('ok'), data } })
   })
   await page.goto('/customer-service.html')
-  await page.getByRole('button', { name: '查询我的订单' }).click()
+  await page.getByRole('button', { name: '我的订单', exact: true }).click()
   const log = page.getByRole('log', { name: '客服聊天记录' })
-  await page.getByRole('button', { name: /查询订单 .* 的详情/ }).click()
+  await page.getByRole('button', { name: '咨询此订单', exact: true }).click()
   await page.getByRole('button', { name: '申请取消订单', exact: true }).click()
   await expect(log).toContainText('商品咨询响应未能确认，请重新操作；页面不会自动重发咨询。')
   await expect(page.locator('.confirmation-card')).toHaveCount(0)
@@ -886,9 +904,9 @@ test('renewal rate limit keeps a valid card and sends one in-flight request', as
     await route.fulfill({ json: { ...response('ok'), data } })
   })
   await page.goto('/customer-service.html')
-  await page.getByRole('button', { name: '查询我的订单' }).click()
+  await page.getByRole('button', { name: '我的订单', exact: true }).click()
   const log = page.getByRole('log', { name: '客服聊天记录' })
-  await page.getByRole('button', { name: /查询订单 .* 的详情/ }).click()
+  await page.getByRole('button', { name: '咨询此订单', exact: true }).click()
   await page.getByRole('button', { name: '申请取消订单', exact: true }).click()
   await expect(log).toContainText('取消确认方案')
   await page.evaluate(() => {
@@ -911,21 +929,22 @@ test('anonymous order questions prompt login without showing order data', async 
   await page.route('**/api/customer-service/messages', route => route.fulfill({ status: 401, json: {
     ...response('error'), code: 'authentication_required', data: null, message: '请登录后查看本人订单',
   } }))
-  await page.route('**/api/auth/login', route => route.fulfill({ status: 401, json: { detail: '邮箱或密码错误' } }))
+  let loginRequests = 0
+  await page.route('**/api/auth/login', async route => {
+    loginRequests += 1
+    await route.fulfill({ status: 401, json: { detail: '邮箱或密码错误' } })
+  })
   await page.goto('/customer-service.html')
-  await page.getByRole('button', { name: '登录', exact: true }).click()
-  const dialog = page.getByRole('dialog', { name: '登录后查看本人订单' })
-  await expect(dialog).toBeVisible()
-  await page.locator('#login-cancel').click()
-  await expect(dialog).toBeHidden()
-  await page.getByRole('button', { name: '查询我的订单' }).click()
+  await page.locator('.account-menu > summary').click()
+  const login = page.getByRole('link', { name: '前往商城登录后继续' })
+  await expect(login).toHaveAttribute('href', '/?customer-service-return=1')
+  await expect(login).toBeVisible()
+  await expect(page.locator('input[type="password"]')).toHaveCount(0)
+  await page.getByRole('button', { name: '我的订单', exact: true }).click()
   const log = page.getByRole('log', { name: '客服聊天记录' })
-  await expect(log).toContainText('请登录后查看本人订单。')
-  await expect(dialog).toBeVisible()
-  await page.getByLabel('邮箱').fill('buyer@example.com')
-  await page.getByLabel('密码').fill('portfolio-demo-pass-123')
-  await page.locator('#login-submit').click()
-  await expect(page.locator('#login-error')).toHaveText('登录失败，请检查邮箱和密码。')
+  await expect(log).toContainText('请登录商城账号后再继续这项服务。')
+  await expect(login).toBeVisible()
+  expect(loginRequests).toBe(0)
   await expect(log).not.toContainText('11111111-1111-4111-8111-111111111111')
 })
 
@@ -934,9 +953,11 @@ test('signed-in account shows logout instead of login', async ({ page }) => {
     id: '22222222-2222-4222-8222-222222222222', email: 'buyer@example.com', role: 'buyer',
   } }))
   await page.goto('/customer-service.html')
-  await expect(page.getByText('已登录买家')).toBeVisible()
-  await expect(page.getByRole('button', { name: '登录', exact: true })).toBeHidden()
-  await expect(page.getByRole('button', { name: '退出', exact: true })).toBeVisible()
+  await expect(page.locator('#account-label')).toHaveText('商城买家')
+  await page.locator('.account-menu > summary').click()
+  await expect(page.getByText('已使用商城买家账号登录')).toBeVisible()
+  await expect(page.getByRole('link', { name: '前往商城登录后继续' })).toBeHidden()
+  await expect(page.getByRole('button', { name: '退出商城账号', exact: true })).toBeVisible()
 })
 
 test('customer-service page fits a mobile viewport', async ({ page }) => {

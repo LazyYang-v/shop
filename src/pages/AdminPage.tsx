@@ -3,9 +3,10 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { User } from '../api/auth'
 import type { Order } from '../api/shop'
 import { adminApi, type AdminProduct, type ProductFilters, type ProductInput, type OrderStatus } from '../api/admin'
+import SupportWorkspace from './SupportWorkspace'
 import './admin.css'
 
-type Tab = 'products' | 'orders'
+type Tab = 'products' | 'orders' | 'support'
 type Write = { pending: boolean; run: (task: () => Promise<unknown>, message: string, done?: () => void) => Promise<void> }
 const statuses: Array<{ value: OrderStatus | ''; label: string }> = [
   { value: '', label: '全部订单' }, { value: 'pending_payment', label: '待支付' },
@@ -15,7 +16,10 @@ const statuses: Array<{ value: OrderStatus | ''; label: string }> = [
 const emptyFilters: ProductFilters = { q: '', category: '', is_listed: '' }
 const money = (value: string) => `¥${Number(value).toFixed(2)}`
 const time = (value: string | null) => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—'
-const tabFromUrl = (): Tab => new URLSearchParams(window.location.search).get('tab') === 'orders' ? 'orders' : 'products'
+const tabFromUrl = (): Tab => {
+  const tab = new URLSearchParams(window.location.search).get('tab')
+  return tab === 'orders' || tab === 'support' ? tab : 'products'
+}
 function orderStatus(order: Order) {
   return order.status === 'pending_payment' && Date.parse(order.expires_at) <= Date.now()
     ? '已超时，等待关闭' : statuses.find(item => item.value === order.status)?.label ?? order.status
@@ -91,10 +95,10 @@ function AdminWorkspace({ userId }: { userId: string }) {
     setError(''); setMessage('')
   }
   return <>
-    <nav className="admin-tabs" aria-label="管理栏目">{(['products', 'orders'] as const).map(value => <a key={value} href={`?view=admin&tab=${value}`} aria-current={tab === value ? 'page' : undefined} onClick={event => changeTab(event, value)}>{value === 'products' ? '商品与库存' : '订单与发货'}</a>)}</nav>
+    <nav className="admin-tabs" aria-label="管理栏目">{(['products', 'orders', 'support'] as const).map(value => <a key={value} href={`?view=admin&tab=${value}`} aria-current={tab === value ? 'page' : undefined} onClick={event => changeTab(event, value)}>{value === 'products' ? '商品与库存' : value === 'orders' ? '订单与发货' : '客服工作台'}</a>)}</nav>
     {error && <p className="admin-notice admin-error" role="alert">{error}</p>}
     {message && <p className="admin-notice" role="status">{message}</p>}
-    {tab === 'products' ? <Products userId={userId} write={write} /> : <Orders userId={userId} write={write} />}
+    {tab === 'products' ? <Products userId={userId} write={write} /> : tab === 'orders' ? <Orders userId={userId} write={write} /> : <SupportWorkspace key={userId} userId={userId} />}
   </>
 }
 

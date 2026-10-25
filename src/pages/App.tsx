@@ -32,6 +32,11 @@ export function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null)
   const [authLoading, setAuthLoading] = useState(false)
   const [authReturnUrl, setAuthReturnUrl] = useState<string | null>(null)
+  const returnParams = new URLSearchParams(window.location.search)
+  const customerServiceReturn = returnParams.get('customer-service-return') === '1'
+  const customerServiceOrder = returnParams.get('customer-service-order') ?? ''
+  const customerServiceReturnUrl = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(customerServiceOrder)
+    ? `/customer-service.html?order=${encodeURIComponent(customerServiceOrder)}` : '/customer-service.html'
   const [commerce, setCommerce] = useState(() => new URLSearchParams(window.location.search).get('view') === 'cart')
   const [detailId, setDetailId] = useState<string | null>(() => new URLSearchParams(window.location.search).get('product'))
   const [detailMessage, setDetailMessage] = useState('')
@@ -77,7 +82,14 @@ export function App() {
   }
 
   useEffect(() => {
-    void authApi.me().then(setCurrentUser).catch(() => setCurrentUser(null))
+    if (customerServiceReturn) {
+      setAuthReturnUrl(customerServiceReturnUrl)
+      setAuthView('login')
+    }
+    void authApi.me().then(user => {
+      setCurrentUser(user)
+      if (customerServiceReturn) window.location.assign(customerServiceReturnUrl)
+    }).catch(() => setCurrentUser(null))
     const expired = () => {
       setCurrentUser(null)
       setAuthMessage('登录状态已失效，请重新登录。')
@@ -86,7 +98,7 @@ export function App() {
     }
     window.addEventListener('auth:expired', expired)
     return () => window.removeEventListener('auth:expired', expired)
-  }, [queryClient])
+  }, [queryClient, customerServiceReturn, customerServiceReturnUrl])
 
   async function submitAuth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -109,6 +121,10 @@ export function App() {
         setCurrentUser(user)
         setAuthMessage(`欢迎回来，${user.email}`)
         setAuthView(null)
+        if (customerServiceReturn) {
+          window.location.assign(customerServiceReturnUrl)
+          return
+        }
         if (authReturnUrl) {
           window.history.pushState(null, '', authReturnUrl)
           window.dispatchEvent(new PopStateEvent('popstate'))

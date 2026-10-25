@@ -172,6 +172,7 @@ export function OrdersPage({ currentUser, onLogin, initialOrderId }: OrdersPageP
       </>}
       {order.status === 'pending_receipt' && <button className="primary-action" disabled={action.isPending} onClick={() => runAction('confirmReceipt', order)}>{pendingHere ? '正在确认…' : '确认收货'}</button>}
       <a className="orders-detail-link" href={orderUrl(order.id, true)} onClick={event => navigate(event, orderUrl(order.id, true))}>查看物流</a>
+      <a className="orders-detail-link" href={`/customer-service.html?order=${encodeURIComponent(order.id)}`}>联系客服</a>
       {!activeOrderId && <a className="orders-detail-link" href={orderUrl(order.id)} onClick={event => navigate(event, orderUrl(order.id))}>查看详情</a>}
     </div>
   }

@@ -37,7 +37,7 @@ test('desktop workspace keeps three columns, compact cards and the storefront re
     requests.push(route.request().postDataJSON())
     await route.fulfill({ json: envelope({ reply: '已核对你选择的本人订单。', cards: [{ type: 'order_detail', order: detail }], citations: [], parts: [{ source: 'get_my_order', status: 'ok', queried_at: '2026-10-25T12:00:00+00:00' }] }) })
   })
-  await page.getByRole('button', { name: '发送给小蜜', exact: true }).click()
+  await page.getByRole('button', { name: '发送给智能客服', exact: true }).click()
   await expect(page.getByRole('region', { name: '订单详情', exact: true })).toContainText('合成速运')
   await expect(page.locator('.logistics-timeline')).toContainText('商家已发货')
   await expect(page.locator('#current-context')).toContainText(product.name)
@@ -191,7 +191,7 @@ for (const width of [320, 390, 768, 1024]) {
     expect(composer!.y + composer!.height).toBeLessThanOrEqual(844)
     await page.getByRole('button', { name: '打开订单与商品', exact: true }).click()
     await expect(page.getByRole('complementary', { name: '订单与商品' })).toBeVisible()
-    await expect(page.getByRole('button', { name: '发送给小蜜', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: '发送给智能客服', exact: true })).toBeVisible()
     await page.getByRole('button', { name: '关闭订单与商品', exact: true }).click()
     if (width <= 800) {
       await page.getByRole('button', { name: '打开服务导航', exact: true }).click()

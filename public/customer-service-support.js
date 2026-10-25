@@ -114,7 +114,7 @@
     }
     if (includeHistory && Array.isArray(data.history) && data.history.length) {
       const details = element('details'); details.append(element('summary', '查看聊天片段'));
-      for (const line of data.history) details.append(element('p', `${line.role === 'user' ? '你' : '小蜜'}：${line.text}`));
+      for (const line of data.history) details.append(element('p', `${line.role === 'user' ? '你' : '智能客服'}：${line.text}`));
       section.append(details);
     }
   }
@@ -272,7 +272,7 @@
       if (version !== generation || !section.isConnected) return;
       section.replaceChildren(element('h2', '确认共享内容'), element('p', '以下为本次最近的必要聊天片段，确认后交给跟进此事的客服。'));
       const transcript = element('div', undefined, 'share-transcript');
-      for (const line of result.items.slice(-12)) transcript.append(element('p', `${line.role === 'user' ? '你' : '小蜜'}：${line.text}`));
+      for (const line of result.items.slice(-12)) transcript.append(element('p', `${line.role === 'user' ? '你' : '智能客服'}：${line.text}`));
       section.append(transcript);
       const share = button('同意共享以上必要对话', async () => {
         if (share.disabled) return;
@@ -375,7 +375,7 @@
         const result = await request(`history?consultation_id=${encodeURIComponent(context.consultation_id)}`);
         if (version !== generation) return;
         const details = element('details'); details.append(element('summary', '查看可选共享的聊天片段'));
-        for (const line of result.items.slice(-12)) details.append(element('p', `${line.role === 'user' ? '你' : '小蜜'}：${line.text}`)); section.append(details);
+        for (const line of result.items.slice(-12)) details.append(element('p', `${line.role === 'user' ? '你' : '智能客服'}：${line.text}`)); section.append(details);
       } catch { history.disabled = true; }
     }
   }

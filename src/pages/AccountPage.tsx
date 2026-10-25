@@ -32,7 +32,7 @@ const emptyAddress: AddressInput = { recipient_name: '', phone: '', province: ''
 export function AccountPage({ currentUser, onLogin, addressesOnly = false }: AccountPageProps) {
   return <main className="account-page">
     <header className="account-masthead">
-      <a className="account-brand" href="/" aria-label="淘宝首页">淘宝 <span>我的淘宝</span></a>
+      <a className="account-brand" href="/" aria-label="商城首页">商城 <span>我的商城</span></a>
       <nav aria-label="个人中心导航">
         <a href="/">返回首页</a>
         <a href="?view=account" aria-current={!addressesOnly ? 'page' : undefined}>个人中心</a>
@@ -42,12 +42,12 @@ export function AccountPage({ currentUser, onLogin, addressesOnly = false }: Acc
       </nav>
     </header>
     <div className="account-content">
-      <div className="account-page-heading"><div><p className="account-eyebrow">我的淘宝 / {addressesOnly ? '收货地址' : '个人中心'}</p><h1>{addressesOnly ? '地址簿' : '个人中心'}</h1><p>{addressesOnly ? '管理常用收货信息，让每次下单更方便。' : '账号、订单和收货信息，都在这里。'}</p></div></div>
+      <div className="account-page-heading"><div><p className="account-eyebrow">我的商城 / {addressesOnly ? '收货地址' : '个人中心'}</p><h1>{addressesOnly ? '地址簿' : '个人中心'}</h1><p>{addressesOnly ? '管理常用收货信息，让每次下单更方便。' : '账号、订单和收货信息，都在这里。'}</p></div></div>
       {!currentUser ? <section className="account-panel account-empty"><h2>登录后，开启你的个人中心</h2><p>使用买家账号查看订单、购物车和收货地址。</p><button className="account-primary" onClick={onLogin}>登录后继续</button></section>
         : currentUser.role !== 'buyer' ? <section className="account-panel account-empty"><h2>这里是买家个人中心</h2><p>当前登录的是管理员账号，请切换买家账号后管理订单和收货地址。</p><button className="account-primary" onClick={onLogin}>切换账号</button><a href="/">返回商城首页</a></section>
           : <BuyerAccount key={currentUser.id} currentUser={currentUser} addressesOnly={addressesOnly} />}
     </div>
-    <footer className="account-footer">我的淘宝 · 轻松管理每一笔购物</footer>
+    <footer className="account-footer">我的商城 · 轻松管理每一笔购物</footer>
   </main>
 }
 

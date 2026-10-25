@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>淘小蜜 · 联系客服</title>
+  <title>智能客服 · 联系客服</title>
   <link rel="stylesheet" href="/customer-service-workspace.css">
 </head>
 <body>
@@ -25,7 +25,7 @@
   </svg>
   <main class="page">
     <header class="workspace-header">
-      <a class="workspace-brand storefront-return" href="/" aria-label="返回商城首页"><span class="brand-mark">淘</span><strong>淘宝</strong><span class="brand-divider"></span><span>智能客服中心</span></a>
+      <a class="workspace-brand storefront-return" href="/" aria-label="返回商城首页"><span class="brand-mark">商</span><strong>商城</strong><span class="brand-divider"></span><span>智能客服中心</span></a>
       <a class="storefront-return header-back" href="/"><svg><use href="#arrow"/></svg>返回商城</a>
       <details class="account-menu">
         <summary><span class="account-avatar" aria-hidden="true">我</span><span id="account-label">商城账号</span><span aria-hidden="true">⌄</span></summary>
@@ -38,7 +38,7 @@
     </header>
     <div class="workspace-body">
       <aside class="service-sidebar" id="service-sidebar" aria-label="服务导航">
-        <div class="sidebar-intro"><span class="assistant-mark" aria-hidden="true">蜜</span><div><strong>你的专属购物助手</strong><span>购物中的小问题，交给小蜜</span></div></div>
+        <div class="sidebar-intro"><span class="assistant-mark" aria-hidden="true">智</span><div><strong>你的专属购物助手</strong><span>购物中的小问题，交给智能客服</span></div></div>
         <button class="new-conversation" id="new-conversation" type="button"><span aria-hidden="true">＋</span>发起新咨询</button>
         <nav class="service-nav" aria-label="客服服务">
           <button class="nav-item is-active" id="current-conversation" type="button" aria-current="page"><svg><use href="#chat-icon"/></svg>智能咨询<span class="nav-dot"></span></button>
@@ -57,7 +57,7 @@
       <section class="chat" aria-label="联系客服" data-customer-service-mode="integrated">
         <header class="heading">
           <button class="mobile-panel-toggle" id="navigation-toggle" type="button" aria-label="打开服务导航" aria-controls="service-sidebar" aria-expanded="false"><svg><use href="#menu-icon"/></svg></button>
-          <span class="assistant-avatar" aria-hidden="true">蜜</span><div class="heading-title"><h1>淘小蜜</h1><p>商品、订单、售后，随时帮你解答</p></div>
+          <span class="assistant-avatar" aria-hidden="true">智</span><div class="heading-title"><h1>智能客服</h1><p>商品、订单、售后，随时帮你解答</p></div>
           <span class="assistant-status" id="assistant-status"><i aria-hidden="true"></i><span id="assistant-status-label">智能服务中</span></span>
           <button class="feedback" type="button" aria-label="反馈"><svg><use href="#feedback"/></svg><span>服务评价</span></button>
           <button class="context-panel-toggle" id="context-toggle" type="button" aria-label="打开订单与商品" aria-controls="context-sidebar" aria-expanded="false"><svg><use href="#document"/></svg></button>
@@ -67,9 +67,9 @@
         <div class="support-shortcuts faq-hints" id="faq-hints" hidden></div>
         <div class="messages" id="messages" role="log" aria-label="客服聊天记录" aria-live="polite">
           <section class="welcome" id="welcome">
-            <span class="welcome-avatar" aria-hidden="true">蜜<span>✦</span></span>
-            <p class="welcome-eyebrow">有问题，找小蜜</p>
-            <h2>你好，我是淘小蜜 <span class="welcome-wave">👋</span></h2>
+            <span class="welcome-avatar" aria-hidden="true">智<span>✦</span></span>
+            <p class="welcome-eyebrow">有问题，找智能客服</p>
+            <h2>你好，我是智能客服 <span class="welcome-wave">👋</span></h2>
             <p class="welcome-copy">商品咨询、订单物流、退换货问题都可以问我。<br>你也可以直接选择下方的快捷服务。</p>
             <div class="welcome-services" aria-label="快捷服务">
               <button type="button" data-prompt="物流到哪了"><span class="service-icon blue"><svg><use href="#truck-icon"/></svg></span><strong>查物流</strong><span>看看包裹到哪了</span></button>
@@ -77,21 +77,21 @@
               <button type="button" data-prompt="我想退换货"><span class="service-icon green"><svg><use href="#service-icon"/></svg></span><strong>退换货</strong><span>售后问题轻松办</span></button>
               <button type="button" data-product-consultation><span class="service-icon violet"><svg><use href="#bag-icon"/></svg></span><strong>商品咨询</strong><span>帮你挑选合适好物</span></button>
             </div>
-            <div class="welcome-catalog"><span>还没有想好买什么？</span><button type="button" data-product-consultation>让小蜜推荐一下<span aria-hidden="true"> →</span></button></div>
+            <div class="welcome-catalog"><span>还没有想好买什么？</span><button type="button" data-product-consultation>让智能客服推荐一下<span aria-hidden="true"> →</span></button></div>
           </section>
         </div>
         <section class="history-view" id="history-view" aria-label="历史咨询" hidden><header><div><h2 id="history-title">咨询记录</h2><p id="history-retention"></p></div><button id="history-return" type="button">返回当前咨询</button></header><div id="history-transcript" class="history-transcript"></div></section>
-        <div class="reply-status" id="reply-status" role="status" hidden><span class="typing-dots" aria-hidden="true"><i></i><i></i><i></i></span>小蜜正在查询，请稍候…</div>
+        <div class="reply-status" id="reply-status" role="status" hidden><span class="typing-dots" aria-hidden="true"><i></i><i></i><i></i></span>智能客服正在查询，请稍候…</div>
         <div class="composer" id="composer">
           <div class="composer-toolbar"><div class="tools"><button class="tool" type="button" id="emoji-button" aria-label="选择表情" aria-expanded="false"><svg><use href="#smile"/></svg></button><button class="tool" type="button" id="picture-button" aria-label="发送图片"><svg><use href="#picture"/></svg></button><button class="tool" type="button" id="camera-button" aria-label="拍照"><svg><use href="#camera"/></svg></button><span class="toolbar-divider"></span><button type="button" class="order-link" id="send-order"><svg><use href="#document"/></svg>选择订单发给客服</button></div></div>
           <div class="emoji-picker" id="emoji-picker" hidden aria-label="选择表情"><button type="button">😊</button><button type="button">👍</button><button type="button">❤️</button><button type="button">🙏</button></div>
           <form class="input-row" id="chat-form"><textarea id="message-input" aria-label="请输入想咨询的问题" placeholder="描述你的问题，或选择一笔订单开始咨询…" rows="3" maxlength="2000"></textarea><div class="composer-bottom"><span class="input-hint">Enter 发送，Shift + Enter 换行</span><span class="input-count" id="input-count">0 / 2000</span><button class="send" id="send-button" type="submit" aria-label="发送" disabled>发送<span aria-hidden="true"> ↗</span></button></div></form>
-          <p class="composer-note">小蜜会根据商城信息为你解答，请勿发送密码或支付凭证。</p>
+          <p class="composer-note">智能客服会根据商城信息为你解答，请勿发送密码或支付凭证。</p>
         </div>
       </section>
       <aside class="context-sidebar" id="context-sidebar" aria-label="订单与商品">
         <div class="context-heading"><div><h2>业务上下文</h2><span id="context-topic">商品、订单与服务进度</span></div><button id="refresh-orders" type="button" aria-label="刷新我的订单">↻</button><button class="panel-close" id="context-close" type="button" aria-label="关闭订单与商品">×</button></div>
-        <details class="order-picker" id="order-picker" open><summary>选择我的订单 <span id="order-count">登录后查看</span></summary><div class="support-shortcuts order-hints" id="order-hints" hidden></div><div class="sidebar-orders" id="sidebar-orders"><div class="context-empty"><span aria-hidden="true"><svg><use href="#box-icon"/></svg></span><strong>订单问题，选单更方便</strong><p>登录商城账号，选择订单发给小蜜。</p><a href="/?customer-service-return=1" id="sidebar-login">登录查看订单 →</a></div></div></details>
+        <details class="order-picker" id="order-picker" open><summary>选择我的订单 <span id="order-count">登录后查看</span></summary><div class="support-shortcuts order-hints" id="order-hints" hidden></div><div class="sidebar-orders" id="sidebar-orders"><div class="context-empty"><span aria-hidden="true"><svg><use href="#box-icon"/></svg></span><strong>订单问题，选单更方便</strong><p>登录商城账号，选择订单发给智能客服。</p><a href="/?customer-service-return=1" id="sidebar-login">登录查看订单 →</a></div></div></details>
         <a class="all-orders" href="/?view=orders">查看全部订单<span aria-hidden="true"> →</span></a>
         <section class="current-context" aria-label="当前咨询"><div class="context-section-title"><h2>当前咨询</h2><span>与你的对话同步</span></div><div id="current-context"><div class="context-placeholder"><svg><use href="#chat-icon"/></svg><p>选择商品或订单后<br>在这里查看咨询内容</p></div></div></section>
         <section class="context-services" aria-label="常用服务"><h2>常用服务</h2><div><button type="button" data-prompt="催发货">催促发货<span>↗</span></button><button type="button" data-prompt="我想退款">退货退款<span>↗</span></button><button type="button" data-prompt="我要申请发票">发票申请<span>↗</span></button><button type="button" data-prompt="查询售后进度">售后进度<span>↗</span></button></div></section>
@@ -134,7 +134,7 @@
         const avatar = document.createElement('span');
         avatar.className = 'avatar';
         avatar.setAttribute('aria-hidden', 'true');
-        avatar.textContent = '蜜';
+        avatar.textContent = '智';
         row.append(avatar);
       }
       const bubble = document.createElement('div');

@@ -183,7 +183,7 @@ export function OrdersPage({ currentUser, onLogin, initialOrderId }: OrdersPageP
 
   return <main className={`commerce-page orders-page ${showLogistics ? 'orders-logistics-page' : ''}`}>
     <header className="commerce-masthead">
-      <a className="commerce-brand" href="/" onClick={event => navigate(event, '')}>淘宝 <span>{activeOrderId && showLogistics ? '物流详情' : '我的订单'}</span></a>
+      <a className="commerce-brand" href="/" onClick={event => navigate(event, '')}>商城 <span>{activeOrderId && showLogistics ? '物流详情' : '我的订单'}</span></a>
       <nav className="commerce-mast-actions orders-navigation" aria-label="商城导航">
         <a href="/" onClick={event => navigate(event, '')}>首页</a>
         <a href="?view=cart" onClick={event => navigate(event, '?view=cart')}>购物车</a>

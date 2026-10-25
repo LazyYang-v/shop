@@ -43,7 +43,7 @@ function Pagination({ page, total, size = 20, busy, onPage }: { page: number; to
 
 export function AdminPage({ currentUser, onLogin }: { currentUser: User | null; onLogin: () => void }) {
   return <main className="admin-page">
-    <header className="admin-masthead"><a className="admin-brand" href="/">淘宝 <span>卖家工作台</span></a><nav aria-label="商城导航"><a href="/">商城首页</a><button onClick={onLogin}>{currentUser ? '切换账号' : '登录'}</button></nav></header>
+    <header className="admin-masthead"><a className="admin-brand" href="/">商城 <span>卖家工作台</span></a><nav aria-label="商城导航"><a href="/">商城首页</a><button onClick={onLogin}>{currentUser ? '切换账号' : '登录'}</button></nav></header>
     <div className="admin-intro"><p>商品有序经营 · 每份订单用心送达</p><h1>商家管理</h1></div>
     {!currentUser ? <section className="admin-card admin-empty"><h2>登录管理员账号</h2><p>登录后维护商品、调整库存和处理发货。</p><button className="admin-primary" onClick={onLogin}>登录后继续</button></section>
       : currentUser.role !== 'admin' ? <section className="admin-card admin-empty"><h2>无权限访问</h2><p>当前为买家账号，请使用管理员账号登录。</p><button className="admin-primary" onClick={onLogin}>切换账号</button></section>

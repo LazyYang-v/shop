@@ -30,10 +30,10 @@ export function ChannelPage() {
     return `?${next}`
   }
   return <main className="channel-page">
-    <header className="channel-masthead"><a className="channel-brand" href="/">淘宝<span>发现好物</span></a><nav aria-label="频道导航"><a href="?view=directory">全部分类</a><a href="?view=account">我的淘宝</a><a href="?view=cart">购物车</a></nav></header>
+    <header className="channel-masthead"><a className="channel-brand" href="/">商城<span>发现好物</span></a><nav aria-label="频道导航"><a href="?view=directory">全部分类</a><a href="?view=account">我的商城</a><a href="?view=cart">购物车</a></nav></header>
     <nav className="channel-tabs" aria-label="好物频道">{channels.map(item => <a key={item.id} href={`?view=channel&channel=${item.id}`} aria-current={channel?.id === item.id ? 'page' : undefined}>{item.title}</a>)}</nav>
     {!channel ? <section className="channel-empty"><h1>这个频道暂未开放</h1><p>去其他频道逛逛，发现更多生活好物。</p><a href="?view=directory">查看全部频道</a></section> : <>
-      <section className={`channel-hero ${channel.tone}`}><div><small>TAOBAO · {channel.title}</small><h1>{channel.subtitle}</h1><p>{channel.description}</p><a href="#channel-products">开始逛逛　↓</a></div><span aria-hidden="true">{channel.emoji}</span></section>
+      <section className={`channel-hero ${channel.tone}`}><div><small>SHANGCHENG · {channel.title}</small><h1>{channel.subtitle}</h1><p>{channel.description}</p><a href="#channel-products">开始逛逛　↓</a></div><span aria-hidden="true">{channel.emoji}</span></section>
       <section className="channel-catalog" id="channel-products">
         <div className="channel-heading"><div><h2>{channel.title}精选</h2><p>在售商品 · 商品价格与库存以当前详情为准</p></div><label>排序 <select aria-label="频道排序" value={sort} onChange={event => { window.location.href = url({ sort: event.target.value }) }}><option value="popular">综合</option><option value="price_asc">价格升序</option><option value="price_desc">价格降序</option></select></label></div>
         <nav className="channel-categories" aria-label="频道商品分类">{!channel.categories.length && <a href={url({ category: '' })} aria-current={!category ? 'page' : undefined}>全部商品</a>}{categoryList.map(item => <a key={item} href={url({ category: item })} aria-current={category === item ? 'page' : undefined}>{item}</a>)}</nav>

@@ -258,7 +258,7 @@
       productLine(section, first?.name || '商城订单', Array.isArray(order.items) ? `共 ${order.items.reduce((sum, item) => sum + (Number.isInteger(item.quantity) ? item.quantity : 0), 0)} 件商品` : '查看订单详情', first?.image_url, order.total);
       section.prepend(heading);
       const bottom = node('div', undefined, 'sidebar-order-bottom');
-      bottom.append(action('发送给小蜜', () => host.selectOrder(order.id)), localLink('查看订单', `/?view=orders&order=${encodeURIComponent(order.id)}`));
+      bottom.append(action('发送给智能客服', () => host.selectOrder(order.id)), localLink('查看订单', `/?view=orders&order=${encodeURIComponent(order.id)}`));
       section.append(bottom); list.append(section);
     }
   }

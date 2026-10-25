@@ -101,7 +101,7 @@ export function CommercePage({ initialOrderId, currentUser, onLogin }: { initial
   }
 
   return <main className="commerce-page">
-    <header className="commerce-masthead"><a href="/" className="commerce-brand">淘宝 <span>{view === 'payment' ? '确认订单' : '购物车'}</span></a><div className="commerce-mast-actions"><a href="?view=orders">我的订单</a><button onClick={() => setView('cart')}>购物车</button><button onClick={onLogin}>{currentUser ? '账号' : '登录'}</button></div></header>
+    <header className="commerce-masthead"><a href="/" className="commerce-brand">商城 <span>{view === 'payment' ? '确认订单' : '购物车'}</span></a><div className="commerce-mast-actions"><a href="?view=orders">我的订单</a><button onClick={() => setView('cart')}>购物车</button><button onClick={onLogin}>{currentUser ? '账号' : '登录'}</button></div></header>
     {message && <p className={`commerce-message ${messageError ? 'error' : ''}`} role={messageError ? 'alert' : 'status'}>{message}</p>}
     {view === 'payment' ? <>
       <div className="commerce-tabs"><button onClick={() => { setView('cart'); setMessage('') }}>← 返回购物车</button><strong>确认订单</strong><span>订单信息</span><span>模拟支付</span></div>

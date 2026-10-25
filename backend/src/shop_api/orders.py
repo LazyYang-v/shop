@@ -114,6 +114,11 @@ def list_orders(session: Session, user: User, status: str | None, page: int, pag
     return OrderListResponse(items=[read_order(session, order) for order in orders], total=total, page=page, page_size=page_size)
 
 
+def _support_notification(session: Session, order: Order, event: str, message: str, now: datetime | None) -> None:
+    from shop_api.customer_service_support import notify
+    notify(session, order.user_id, f"order:{order.id}:{event}", message, now or now_utc())
+
+
 def ship_order(session: Session, order_id: UUID, payload: ShipmentInput, now=None) -> OrderResponse:
     order = session.scalar(select(Order).where(Order.id == order_id).with_for_update())
     if order is None:
@@ -124,6 +129,7 @@ def ship_order(session: Session, order_id: UUID, payload: ShipmentInput, now=Non
     order.shipping_company = payload.shipping_company
     order.tracking_number = payload.tracking_number
     order.shipped_at = now or now_utc()
+    _support_notification(session, order, "shipped", f"订单 {order.id} 已发货，请在本人订单中查看物流公司和运单号。", order.shipped_at)
     session.commit()
     return read_order(session, order)
 
@@ -136,6 +142,7 @@ def confirm_receipt(session: Session, user: User, order_id: UUID, now=None) -> O
         raise HTTPException(status_code=409, detail="当前订单状态不可确认收货")
     order.status = "completed"
     order.completed_at = now or now_utc()
+    _support_notification(session, order, "receipt", f"订单 {order.id} 已由你确认收货。", order.completed_at)
     session.commit()
     return read_order(session, order)
 

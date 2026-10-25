@@ -38,6 +38,7 @@ from shop_api.database import Base
 from shop_api.identity import AuthSession, require_csrf
 from shop_api.orders import Order
 from shop_api.customer_service_admission import require_demo_buyer, require_product_reader, require_query_rate_limits
+from shop_api.customer_service_integrated import StorefrontProductTools, route_message
 
 LIST_PRODUCTS_TEXT = "查看演示商品"
 PRODUCT_SELECTION_PREFIX = "查看演示商品："
@@ -729,6 +730,8 @@ def build_consultation_router(session_dependency, current_session):
             raise ConsultationError(422, "invalid_input", "请选择受支持的服务查询")
         if payload.text is not None and payload.text.strip() == CANCEL_TRIGGER_TEXT:
             return _cancel_turn(payload, request, record, db, page, consultation, body_hash, key, deadline)
+        if request.app.state.customer_service_mode == "integrated":
+            return _integrated_turn(payload, request, record, db, page, consultation, body_hash, key, deadline)
         composite = understand_composite(payload.text or '', request.app.state.customer_service_fixtures)
         if composite is not None:
             return _composite_turn(payload, request, record, db, page, consultation, body_hash, key, deadline, composite)
@@ -818,6 +821,39 @@ def build_consultation_router(session_dependency, current_session):
                                                           "cards": cards, "citations": []}, **({'code': degraded} if degraded else {}))
         # Log failure rolls back result persistence; there are no business writes here.
         request.app.state.customer_service_log_writer.write(request.state.customer_service_request_id, name, "", 0, len(products), now)
+        _store_response(db, key, response)
+        page.last_used_at = consultation.last_used_at = now
+        db.commit()
+        return response
+
+    def _integrated_turn(payload, request, record, db, page, consultation, body_hash, key, deadline):
+        from shop_api.customer_service_orchestration import run_specialist
+        from shop_api.identity import Role
+
+        reader = require_product_reader(request, record, db)
+        buyer = reader if reader is not None and reader.role == Role.BUYER.value else None
+        require_query_rate_limits(request)
+        if payload.selected_order_id is not None:
+            buyer = require_demo_buyer(request, record, db)
+            _order_probe_rate(request, buyer)
+            selected = _selected_order(db, buyer, payload.selected_order_id)
+            _record_selection(db, page, selected, request.app.state.clock())
+        elif re.search(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", payload.text or "") and buyer:
+            _order_probe_rate(request, buyer)
+        db.add(ConsultationMessage(consultation_id=consultation.id, page_id=page.id,
+               client_message_id=UUID(payload.client_message_id), body_hash=body_hash,
+               response=_envelope(request, "unavailable", code="processing", message="已有请求结果未能确认")))
+        db.commit()
+        data = run_specialist(payload, request, record, db, page, consultation, buyer, deadline=deadline)
+        now = request.app.state.clock()
+        _lock_session(db, record, now)
+        require_product_reader(request, record, db)
+        if buyer is not None:
+            require_demo_buyer(request, record, db)
+        page, consultation = _page(db, record, payload.page_instance_id, now)
+        if payload.selected_order_id is not None and page.selected_order_id != UUID(payload.selected_order_id):
+            raise ConsultationError(409, "state_conflict", "订单选择已变化，请重新选择")
+        response = _envelope(request, "ok", data)
         _store_response(db, key, response)
         page.last_used_at = consultation.last_used_at = now
         db.commit()

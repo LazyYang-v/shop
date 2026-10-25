@@ -2,6 +2,7 @@ import asyncio
 import time
 import logging
 import os
+import tempfile
 from contextlib import asynccontextmanager, suppress
 from collections.abc import Generator
 from datetime import UTC
@@ -24,6 +25,7 @@ from shop_api.customer_service_maintenance import CustomerServiceMaintenance
 from shop_api.customer_service_admission import require_product_reader, require_query_rate_limits
 from shop_api.customer_service_products import ProductTools
 from shop_api.customer_service_consultations import build_consultation_router
+from shop_api.customer_service_support_api import build_support_router
 from shop_api.expiry import expire_orders, expiry_loop
 from shop_api.orders import CheckoutInput, Order, OrderListResponse, OrderResponse, ShipmentInput, cancel_order, confirm_receipt, create_order, get_order, list_orders, read_order, ship_order, simulate_payment
 from shop_api.admin_catalog import build_admin_catalog_router
@@ -95,6 +97,10 @@ def create_app(database_url: str | None = None, *, synthetic_product_exchange=No
 
     current_session = make_current_session_dependency(session_dependency, clock=lambda: app.state.clock())
     app.state.session_factory = factory
+    configured_customer_service_mode = os.getenv("SHOP_CUSTOMER_SERVICE_MODE")
+    if configured_customer_service_mode not in {"demo", "integrated"}:
+        configured_customer_service_mode = "demo" if os.getenv("SHOP_CUSTOMER_SERVICE_DEMO_MODE") == "1" else "disabled"
+    app.state.customer_service_mode = configured_customer_service_mode
     app.state.customer_service_enabled = False
     app.state.customer_service_limiter = SharedLimiter(factory)
     app.state.customer_service_log_writer = None
@@ -133,7 +139,47 @@ def create_app(database_url: str | None = None, *, synthetic_product_exchange=No
         if application.state.customer_service_enabled:
             await maintenance.run()
 
+    def initialize_integrated_customer_service(application: FastAPI, session: Session) -> None:
+        if application.state.customer_service_mode != "integrated":
+            return
+        try:
+            from shop_api.customer_service import QueryDeadline
+            from shop_api.customer_service_cancel import CancelOperation
+            from shop_api.customer_service_consultations import Consultation, ConsultationMessage, ConsultationPage
+
+            with session.begin_nested():
+                QueryDeadline(3).apply(session)
+                # Validate the columns used by consultations without changing schema or data.
+                from shop_api.customer_service_support import (
+                    SupportContext, SupportCase, SupportPreference, SupportEvent, SupportChannel, SupportNotification,
+                )
+                from shop_api.customer_service_knowledge import KnowledgeEntry
+                for model in (Consultation, ConsultationPage, ConsultationMessage, CancelOperation,
+                              SupportContext, SupportCase, SupportPreference, SupportEvent,
+                              SupportChannel, SupportNotification, KnowledgeEntry):
+                    session.execute(select(model).limit(0))
+                from sqlalchemy import text
+                session.execute(text("SELECT bucket_key, hits, window_started_at, expires_at FROM customer_service_rate_limits LIMIT 0"))
+                session.execute(text("SELECT id, bucket_key, event_at FROM customer_service_rate_limit_events LIMIT 0"))
+            directory = os.getenv("SHOP_CUSTOMER_SERVICE_LOG_DIRECTORY")
+            if directory is None:
+                directory = os.path.join(tempfile.gettempdir(), "shop-customer-service-integrated-logs")
+                os.makedirs(directory, mode=0o700, exist_ok=True)
+            writer = SafeLogWriter(directory)
+            writer.verify()
+            writer.prune(application.state.clock())
+            application.state.customer_service_log_writer = writer
+            application.state.customer_service_enabled = True
+        except Exception as error:
+            logging.getLogger(__name__).warning(
+                "customer_service_integrated_disabled error=%s", type(error).__name__)
+
     def initialize_customer_service_guards(application: FastAPI, session: Session) -> None:
+        if application.state.customer_service_mode == "integrated":
+            initialize_integrated_customer_service(application, session)
+            return
+        if application.state.customer_service_mode != "demo":
+            return
         fixture_path = os.getenv("SHOP_CUSTOMER_SERVICE_FIXTURE_PATH")
         fixture_digest = os.getenv("SHOP_CUSTOMER_SERVICE_FIXTURE_SHA256")
         log_directory = os.getenv("SHOP_CUSTOMER_SERVICE_LOG_DIRECTORY")
@@ -240,6 +286,11 @@ def create_app(database_url: str | None = None, *, synthetic_product_exchange=No
 
     customer_service_router = APIRouter(prefix="/api/customer-service", route_class=CustomerServiceRoute)
 
+    @customer_service_router.get("/mode")
+    def customer_service_mode(response: Response) -> dict[str, object]:
+        response.headers["Cache-Control"] = "no-store"
+        return {"mode": app.state.customer_service_mode, "enabled": app.state.customer_service_enabled}
+
     @customer_service_router.get("/products")
     def customer_service_products(
         request: Request,
@@ -254,6 +305,8 @@ def create_app(database_url: str | None = None, *, synthetic_product_exchange=No
     ) -> dict[str, object]:
         response.headers["Cache-Control"] = "no-store"
         require_product_reader(request, record, buyer_session)
+        if app.state.customer_service_mode == "integrated" and category is not None:
+            raise HTTPException(status_code=422, detail="查询参数无效")
         if set(request.query_params) - {"q", "category", "page", "page_size"}:
             raise HTTPException(status_code=422, detail="查询参数无效")
         request_id = request.state.customer_service_request_id
@@ -262,14 +315,23 @@ def create_app(database_url: str | None = None, *, synthetic_product_exchange=No
             raise HTTPException(status_code=425, detail="已有查询正在处理")
         require_query_rate_limits(request)
         try:
-            result = ProductTools(session, app.state.customer_service_fixtures, request_id, app.state.clock).call(
-                "list_products", {"keyword": q, "category": category, "page": page, "page_size": page_size},
-            )
+            if app.state.customer_service_mode == "integrated":
+                from shop_api.customer_service_integrated import StorefrontProductTools
+                result = StorefrontProductTools(session, request_id, app.state.clock).call(
+                    "list_products", {"keyword": q, "page": page, "page_size": page_size})
+            else:
+                result = ProductTools(session, app.state.customer_service_fixtures, request_id, app.state.clock).call(
+                    "list_products", {"keyword": q, "category": category, "page": page, "page_size": page_size},
+                )
+        except HTTPException:
+            raise
         except Exception as error:
-            app.state.customer_service_log_writer.write(request_id, "list_products", "dependency_unavailable", int((time.monotonic() - started) * 1000), 1, app.state.clock())
+            if app.state.customer_service_log_writer is not None:
+                app.state.customer_service_log_writer.write(request_id, "list_products", "dependency_unavailable", int((time.monotonic() - started) * 1000), 1, app.state.clock())
             logging.getLogger(__name__).warning("customer_service_query_failed request_id=%s error=%s", request_id, type(error).__name__)
             raise HTTPException(status_code=503, detail="商品查询暂不可用") from None
-        app.state.customer_service_log_writer.write(request_id, "list_products", "", int((time.monotonic() - started) * 1000), len(result["data"]["items"]), app.state.clock())
+        if app.state.customer_service_log_writer is not None:
+            app.state.customer_service_log_writer.write(request_id, "list_products", "", int((time.monotonic() - started) * 1000), len(result["data"]["items"]), app.state.clock())
         return result
 
     @customer_service_router.get("/products/{product_id}")
@@ -291,20 +353,28 @@ def create_app(database_url: str | None = None, *, synthetic_product_exchange=No
             raise HTTPException(status_code=425, detail="已有查询正在处理")
         require_query_rate_limits(request)
         try:
-            result = ProductTools(session, app.state.customer_service_fixtures, request_id, app.state.clock).call(
-                "get_product", {"product_id": str(product_id)},
-            )
+            if app.state.customer_service_mode == "integrated":
+                from shop_api.customer_service_integrated import StorefrontProductTools
+                result = StorefrontProductTools(session, request_id, app.state.clock).call(
+                    "get_product", {"product_id": str(product_id)})
+            else:
+                result = ProductTools(session, app.state.customer_service_fixtures, request_id, app.state.clock).call(
+                    "get_product", {"product_id": str(product_id)},
+                )
         except HTTPException:
             raise
         except Exception as error:
-            app.state.customer_service_log_writer.write(request_id, "get_product", "dependency_unavailable", int((time.monotonic() - started) * 1000), 1, app.state.clock())
+            if app.state.customer_service_log_writer is not None:
+                app.state.customer_service_log_writer.write(request_id, "get_product", "dependency_unavailable", int((time.monotonic() - started) * 1000), 1, app.state.clock())
             logging.getLogger(__name__).warning("customer_service_lookup_failed request_id=%s error=%s", request_id, type(error).__name__)
             raise HTTPException(status_code=503, detail="商品查询暂不可用") from None
-        app.state.customer_service_log_writer.write(request_id, "get_product", "", int((time.monotonic() - started) * 1000), 1, app.state.clock())
+        if app.state.customer_service_log_writer is not None:
+            app.state.customer_service_log_writer.write(request_id, "get_product", "", int((time.monotonic() - started) * 1000), 1, app.state.clock())
         return result
 
     app.include_router(customer_service_router)
     app.include_router(build_consultation_router(session_dependency, current_session))
+    app.include_router(build_support_router(session_dependency, current_session))
 
     @app.get("/api/categories")
     def get_categories(session: Session = Depends(session_dependency)) -> dict[str, list[str]]:

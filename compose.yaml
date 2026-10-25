@@ -38,6 +38,7 @@ services:
       context: ./backend
     environment:
       SHOP_DATABASE_URL: postgresql+psycopg://shop:${SHOP_DB_PASSWORD}@db:5432/shop_dev
+      SHOP_CUSTOMER_SERVICE_MODE: integrated
     ports:
       - "127.0.0.1:8011:8000"
     depends_on:

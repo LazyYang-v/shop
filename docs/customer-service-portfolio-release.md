@@ -2,13 +2,13 @@
 
 日期：2026-10-24。关联：[工单 #9](https://github.com/LazyYang-v/docs/issues/9)。项目负责人及全部条目的批准人：**LazyYang-v（用户）**；验证与证据整理执行人：本次实施助手。用户已在本会话批准下列 13 项，要求修正版本口径后直接执行，无须再次确认。
 
-**结论：客服作品集发布验收通过，#9 按此范围收口。** 交付为私有源码及本机隔离演示，只使用虚构商品、专用演示身份和明确标注的合成演示政策，不接真实买家数据。真实商城上线不在本次交付内；[生产化前置条件](customer-service-real-release-prerequisites.md)已归档，不作为作品集或 #9 的阻塞项。
+**结论：`941fe4e` 客服作品集发布验收通过，#9 按此范围收口。** 源码位于当前公开的 [LazyYang-v/shop](https://github.com/LazyYang-v/shop) 仓库，演示运行在本机隔离环境；只使用虚构商品、专用演示身份和明确标注的合成演示政策，不接真实买家数据。真实商城上线不在本次交付内；[生产化前置条件](customer-service-real-release-prerequisites.md)已归档，不作为作品集或 #9 的阻塞项。默认分支在候选之后的新功能不属于本次验收。
 
 ## 候选与证据版本
 
 | 证据层次 | 对应版本 | 已验证内容及调用口径 |
 |---|---|---|
-| 功能候选与已发布源码 | `941fe4e61c3e725db230f5139adb1a4a3a3661c3`，分支 `integration/customer-service-ticket-9` | 已只读核对 [GitHub 分支](https://github.com/LazyYang-v/shop/tree/integration/customer-service-ticket-9) SHA 与本地相同；本次收口仅更新文档，不产生新的功能版本 |
+| 2026-10-24 功能候选与当时已发布源码 | [`941fe4e61c3e725db230f5139adb1a4a3a3661c3`](https://github.com/LazyYang-v/shop/tree/941fe4e61c3e725db230f5139adb1a4a3a3661c3) | 当时已核对远端与本地 SHA 相同；这是固定验收候选，不代表当前默认分支 HEAD |
 | #9 完整回归 | `a4478a6180026b45210251a4fafb5c49e412ca11` | 完整后端 399 项（含真实 PostgreSQL、桌面/移动 Chrome），页面模拟 28 项。商品/六工具组合的模型往返使用合成 exchange，政策使用进程内合成索引；**该候选验收新增真实模型/WeKnora 调用均为 0** |
 | #9 实际部署与恢复 | 源码归档 `4e43485be99ddf1a103c21165cef481d99b5b338`；API 镜像 `sha256:d3e04062388ae0433e5f938423890762bc47ba3c36612cab198262a0105c4d02` | 持久演示采用默认确定性组合，无合成模型 transport 注入；合成政策索引、真实 API/数据库与浏览器。部署/故障/恢复三模式新增真实模型/WeKnora 调用均为 0 |
 | #3 真实提供方兼容性归档 | 实现 `98b1881`，证据收口 `722ed62b308d9d0276bc6effec8b69b4c27cd013`，2026-10-23 | **6 次真实模型请求：2 次诊断性失败 + 4 次成功**；两个成功模型轮次均完成商品工具调用与最终 JSON。覆盖历史商品路径，不能当作当前六工具组合的真实提供方验证 |
@@ -23,7 +23,7 @@
 
 | # | 发布门槛 | 验证方式、版本与实际证据 | 结果 | 批准人 |
 |---|---|---|---|---|
-| 1 | 交付范围明确 | [README](../README.md#客服演示与验收)、本文及[运行契约](customer-service-runtime-contract.md#当前范围及文档优先级)统一为私有源码 + loopback 演示；不表示公开托管或真实商城上线 | 通过 | LazyYang-v |
+| 1 | 交付范围明确 | [README](../README.md#客服演示与验收)、本文及[运行契约](customer-service-runtime-contract.md#当前范围及文档优先级)现统一为公开源码仓库 + loopback 隔离演示；候选固定到 `941fe4e`，不表示真实商城上线 | 通过；仓库可见性措辞于 2026-10-25 更正 | LazyYang-v |
 | 2 | 演示数据全部虚构 | `941fe4e` 的四件商品/合成政策 fixture、专用身份及[部署数据准备](../deploy/customer-service-demo/ticket-9-acceptance.md#实际浏览器与-api-证据)；政策有虚构标签，新验收商品/物流明确虚构；只对隔离客服演示作此结论，不扩展到开发库或全站 | 通过 | LazyYang-v |
 | 3 | 六工具及组合咨询可演示 | `a4478a6` 的[六工具与 32 场景](customer-service-final-acceptance.md#六工具及独立协议能力)及合成 exchange 测试；`4e43485` 部署的确定性组合两端通过。历史 `722ed62` 的 6 次真实请求仅按上表归档，不扩大为六工具实测 | 通过 | LazyYang-v |
 | 4 | 答复与事实一致 | G01–G07 对照商城 API、合成权威登记及保存物流；不适用取消时不签发；没有退款、实时轨迹、预计送达或人工受理的成功承诺 | 通过 | LazyYang-v |
@@ -52,4 +52,10 @@
 
 复现入口：[固定评测及正式测试命令](customer-service-final-acceptance.md#本地重复验收入口)、[实际部署/故障/恢复脚本及准确资源](../deploy/customer-service-demo/ticket-9-acceptance.md)。旧 `runtime.py` 和 `e2e/customer-service-demo.mjs` 属于早期商品阶段；当前 #9 镜像、组合和恢复以 `ticket-9-acceptance.md` 与 `e2e/customer-service-deployment.mjs` 为准，不能用旧默认镜像覆盖当前版本。
 
-工单操作状态：[作品集验收评论](https://github.com/LazyYang-v/docs/issues/9#issuecomment-6382962885)已发布。覆盖原工单正文和关闭工单的操作分别被自动审批拒绝，要求明确批准具体动作；未改原正文或标签，工单当前仍为 OPEN。这是工单操作限制，不改变作品集验收结论，也不恢复生产化阻塞。此次范围文档提交尚未推送，已发布的功能候选仍为 `941fe4e`。
+## 2026-10-25 状态核对与范围更正
+
+[作品集验收评论](https://github.com/LazyYang-v/docs/issues/9#issuecomment-6382962885)已发布；GitHub 显示 #9 为 **CLOSED**，关闭时间 `2026-10-24T10:17:35Z`。原工单正文仍保留历史规格，最终作品集范围以验收评论及本文为准。此前“自动审批拦截关闭、工单仍 OPEN”的记录已过时。
+
+GitHub API 核实 `LazyYang-v/shop` 为 `private: false`、`visibility: public`，默认分支 `integration/customer-service-ticket-9` 已从候选 `941fe4e` 前进到 `d382858`。此前文档把源码称为“私有”有误；本次只更正可见性表述，不把后续六职责平台、三栏工作台、服务申请等功能追认为旧验收内容。当前开发范围与候选边界见 [README](../README.md#验收候选与后续开发)。
+
+对远端分支可达的 703 个 Git blob 做了文件名及常见凭据形态检查：未发现提交过实际 `.env`、私钥文件或高置信度令牌形态；命中的一般密码变量赋值经核查为模板占位符、代码表达式或测试数据。此项是静态历史检查，不代表对所有秘密格式或已删除的不可达对象作出保证。演示凭据仍保存在仓库外。

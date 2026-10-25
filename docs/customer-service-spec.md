@@ -1,6 +1,6 @@
 ## Problem Statement
 
-> 历史规格：保留当轮需求与授权边界。2026-10-24 用户已批准[客服作品集发布范围与 13 项验收](customer-service-portfolio-release.md)：虚构数据、合成演示政策、私有源码与本机隔离演示，#9 按此范围收口。[生产化前置条件](customer-service-real-release-prerequisites.md)已归档，不阻塞当前作品集；下文“真实商城政策/WeKnora 接入”不表示当前已实现或必须补齐。现有权限及冻结参数仍以[运行契约](customer-service-runtime-contract.md)为准，历史 OPEN/未授权/待冻结不作为当前结论。
+> 历史规格：保留当轮需求与授权边界。2026-10-24 用户已批准[客服作品集发布范围与 13 项验收](customer-service-portfolio-release.md)：虚构数据、合成演示政策、公开源码仓库中的固定候选 `941fe4e` 与本机隔离演示，#9 按此范围收口。[生产化前置条件](customer-service-real-release-prerequisites.md)已归档，不阻塞当前作品集；下文“真实商城政策/WeKnora 接入”不表示当前已实现或必须补齐。现有权限及冻结参数仍以[运行契约](customer-service-runtime-contract.md)为准，历史 OPEN/未授权/待冻结不作为当前结论。
 
 商城已有商品、买家订单、已保存物流信息及未支付订单取消能力，但当前客服页面仅作本地消息演示。访客和买家无法通过客服获得有据可查的商城政策、本人订单信息，以及可确认、可核验的取消结果。
 
